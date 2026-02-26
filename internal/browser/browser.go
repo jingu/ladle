@@ -8,6 +8,7 @@ import (
 	"path"
 	"strings"
 
+	"github.com/jingu/ladle/internal/spinner"
 	"github.com/jingu/ladle/internal/storage"
 	"github.com/jingu/ladle/internal/uri"
 )
@@ -67,7 +68,10 @@ func (b *Browser) Run(ctx context.Context) (*Selection, error) {
 			continue
 		}
 
+		sp := spinner.New(b.out, "Loading ...")
+		sp.Start()
 		entries, err := b.client.List(ctx, b.bucket, b.prefix, "/")
+		sp.Stop()
 		if err != nil {
 			return nil, fmt.Errorf("listing objects: %w", err)
 		}

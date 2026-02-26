@@ -17,6 +17,7 @@ import (
 	"github.com/jingu/ladle/internal/diff"
 	"github.com/jingu/ladle/internal/editor"
 	"github.com/jingu/ladle/internal/meta"
+	"github.com/jingu/ladle/internal/spinner"
 	"github.com/jingu/ladle/internal/storage"
 	"github.com/jingu/ladle/internal/storage/s3client"
 	"github.com/jingu/ladle/internal/uri"
@@ -148,10 +149,13 @@ func newClient(ctx context.Context, u *uri.URI, f *flags) (storage.Client, error
 func runFileEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flags) error {
 	// Download file
 	var buf strings.Builder
-	fmt.Fprintf(os.Stderr, "Downloading %s ...\n", u)
+	sp := spinner.New(os.Stderr, fmt.Sprintf("Downloading %s ...", u))
+	sp.Start()
 	if err := client.Download(ctx, u.Bucket, u.Key, &buf); err != nil {
+		sp.Stop()
 		return err
 	}
+	sp.StopWithMessage(fmt.Sprintf("✓ Downloaded %s", u))
 	original := buf.String()
 
 	// Binary check
@@ -224,21 +228,26 @@ func runFileEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flag
 	existingMeta.ContentType = ct
 
 	// Upload
-	fmt.Fprintf(os.Stderr, "Uploading to %s ...\n", u)
+	sp = spinner.New(os.Stderr, fmt.Sprintf("Uploading to %s ...", u))
+	sp.Start()
 	if err := client.Upload(ctx, u.Bucket, u.Key, strings.NewReader(modified), existingMeta); err != nil {
+		sp.Stop()
 		return err
 	}
-	fmt.Fprintln(os.Stderr, "Done.")
+	sp.StopWithMessage(fmt.Sprintf("✓ Uploaded to %s", u))
 	return nil
 }
 
 func runMetaEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flags) error {
 	// Fetch metadata
-	fmt.Fprintf(os.Stderr, "Fetching metadata for %s ...\n", u)
+	sp := spinner.New(os.Stderr, fmt.Sprintf("Fetching metadata for %s ...", u))
+	sp.Start()
 	objMeta, err := client.HeadObject(ctx, u.Bucket, u.Key)
 	if err != nil {
+		sp.Stop()
 		return err
 	}
+	sp.StopWithMessage(fmt.Sprintf("✓ Fetched metadata for %s", u))
 
 	// Marshal to YAML
 	originalYAML, err := meta.Marshal(u.String(), objMeta)
@@ -301,11 +310,13 @@ func runMetaEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flag
 	}
 
 	// Update metadata using CopyObject
-	fmt.Fprintf(os.Stderr, "Updating metadata for %s ...\n", u)
+	sp = spinner.New(os.Stderr, fmt.Sprintf("Updating metadata for %s ...", u))
+	sp.Start()
 	if err := client.UpdateMetadata(ctx, u.Bucket, u.Key, newMeta); err != nil {
+		sp.Stop()
 		return err
 	}
-	fmt.Fprintln(os.Stderr, "Done.")
+	sp.StopWithMessage(fmt.Sprintf("✓ Updated metadata for %s", u))
 	return nil
 }
 
