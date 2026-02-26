@@ -37,7 +37,8 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.26"
+          # Match go.mod version; Go 1.26 has smithy-go compatibility issues
+          go-version: "1.25"
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6

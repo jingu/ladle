@@ -48,6 +48,7 @@ brews:
   - repository:
       owner: jingu
       name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     homepage: "https://github.com/jingu/ladle"
     description: "Edit cloud storage files with your local editor"
     license: "MIT"
