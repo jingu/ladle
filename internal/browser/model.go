@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/jingu/ladle/internal/apierror"
 	"github.com/jingu/ladle/internal/storage"
 	"github.com/jingu/ladle/internal/uri"
 )
@@ -117,7 +118,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case editDoneMsg:
 		m.loading = false
 		if msg.err != nil {
-			m.message = msg.err.Error()
+			m.message = apierror.Classify(msg.err).Error()
 		}
 		return m, nil
 	case tickMsg:
@@ -129,7 +130,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case navigatedMsg:
 		m.loading = false
 		if msg.err != nil {
-			m.message = msg.err.Error()
+			m.message = apierror.Classify(msg.err).Error()
 			return m, nil
 		}
 		m.nodes = msg.nodes
@@ -207,7 +208,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// File selected — exec edit with TUI suspended
 			cmd, err := m.execEdit(n.entry.key)
 			if err != nil {
-				m.message = err.Error()
+				m.message = apierror.Classify(err).Error()
 				return m, nil
 			}
 			return m, cmd
@@ -356,7 +357,7 @@ func (m model) navigateToBucket(bucket string) tea.Cmd {
 func (m model) handleChildrenLoaded(msg childrenLoadedMsg) (tea.Model, tea.Cmd) {
 	m.loading = false
 	if msg.err != nil {
-		m.message = msg.err.Error()
+		m.message = apierror.Classify(msg.err).Error()
 		return m, nil
 	}
 	for _, n := range m.allNodes() {
