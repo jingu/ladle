@@ -1030,6 +1030,79 @@ func TestScrollOffsetPreservation(t *testing.T) {
 	}
 }
 
+func TestFlashMessageDisplayed(t *testing.T) {
+	items := []item{
+		{label: "file.txt", entry: storage.ListEntry{Size: 1024}},
+		{label: "quit", isNav: true, navID: "quit"},
+	}
+
+	b, out := newTestBrowser(nil, "b", "", false, "")
+	b.flash = "Error: something went wrong"
+	off := 0
+	b.renderFiltered(items, allIndices(len(items)), 0, "", false, &off)
+
+	output := out.String()
+	if !strings.Contains(output, "something went wrong") {
+		t.Error("expected flash message in output")
+	}
+	if !strings.Contains(output, ansiYellow) {
+		t.Error("expected flash message to use yellow color")
+	}
+}
+
+func TestFlashMessageNotDisplayedWhenEmpty(t *testing.T) {
+	items := []item{
+		{label: "file.txt", entry: storage.ListEntry{Size: 1024}},
+		{label: "quit", isNav: true, navID: "quit"},
+	}
+
+	b, out := newTestBrowser(nil, "b", "", false, "")
+	off := 0
+	b.renderFiltered(items, allIndices(len(items)), 0, "", false, &off)
+
+	output := out.String()
+	// Count occurrences of ansiYellow — should only appear in help line or not at all for flash
+	lines := strings.Split(output, "\r\n")
+	for _, line := range lines {
+		if strings.Contains(line, ansiYellow) && !strings.Contains(line, "filter") {
+			// Yellow should only appear in filter bar, not as a flash line
+			if !strings.Contains(line, "/") {
+				t.Errorf("unexpected yellow line when flash is empty: %q", line)
+			}
+		}
+	}
+}
+
+func TestFlashMessageClearedOnKeypress(t *testing.T) {
+	items := []item{
+		{label: "file.txt"},
+		{label: "quit", isNav: true, navID: "quit"},
+	}
+
+	// 'j' moves down, then Enter selects
+	b, _ := newTestBrowser(nil, "b", "", false, "j\r")
+	b.flash = "Error: test message"
+
+	idx, quit, _ := b.handleInput(context.Background(), items, 0)
+	if quit {
+		t.Fatal("expected no quit")
+	}
+	if idx != 1 {
+		t.Errorf("expected idx 1, got %d", idx)
+	}
+	if b.flash != "" {
+		t.Errorf("expected flash to be cleared, got %q", b.flash)
+	}
+}
+
+func TestSetFlash(t *testing.T) {
+	b := &Browser{}
+	b.SetFlash("test message")
+	if b.flash != "test message" {
+		t.Errorf("expected flash %q, got %q", "test message", b.flash)
+	}
+}
+
 func TestComputeTreePrefixesNested(t *testing.T) {
 	// Simulates:
 	//   └── ▼ a/

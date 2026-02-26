@@ -335,11 +335,11 @@ func runBrowser(ctx context.Context, client storage.Client, u *uri.URI, f *flags
 		if sel.Action == browser.ActionEdit {
 			if f.meta {
 				if err := runMetaEdit(ctx, client, sel.URI, f); err != nil {
-					fmt.Fprintf(os.Stderr, "Error: %v\n", apierror.Classify(err))
+					b.SetFlash(fmt.Sprintf("Error: %v", apierror.Classify(err)))
 				}
 			} else {
 				if err := runFileEdit(ctx, client, sel.URI, f); err != nil {
-					fmt.Fprintf(os.Stderr, "Error: %v\n", apierror.Classify(err))
+					b.SetFlash(fmt.Sprintf("Error: %v", apierror.Classify(err)))
 				}
 			}
 			// Return to browser after editing
