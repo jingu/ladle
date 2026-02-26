@@ -29,6 +29,11 @@ func (u *URI) IsDirectory() bool {
 	return u.Key == "" || strings.HasSuffix(u.Key, "/")
 }
 
+// IsBucketList returns true if the URI has no bucket (e.g. "s3://").
+func (u *URI) IsBucketList() bool {
+	return u.Bucket == ""
+}
+
 // String returns the original URI string.
 func (u *URI) String() string {
 	return u.Raw
@@ -50,21 +55,21 @@ func Parse(raw string) (*URI, error) {
 	}
 
 	rest := raw[idx+3:]
-	if rest == "" {
-		return nil, fmt.Errorf("invalid URI %q: missing bucket name", raw)
-	}
 
 	var bucket, key string
-	slashIdx := strings.Index(rest, "/")
-	if slashIdx < 0 {
-		bucket = rest
+	if rest == "" {
+		// scheme:// with no bucket — bucket list mode
 	} else {
-		bucket = rest[:slashIdx]
-		key = rest[slashIdx+1:]
-	}
-
-	if bucket == "" {
-		return nil, fmt.Errorf("invalid URI %q: empty bucket name", raw)
+		slashIdx := strings.Index(rest, "/")
+		if slashIdx < 0 {
+			bucket = rest
+		} else {
+			bucket = rest[:slashIdx]
+			key = rest[slashIdx+1:]
+		}
+		if bucket == "" {
+			return nil, fmt.Errorf("invalid URI %q: empty bucket name", raw)
+		}
 	}
 
 	return &URI{
