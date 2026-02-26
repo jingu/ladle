@@ -1,6 +1,7 @@
 # Binary
 /ladle
 dist/
+coverage.out
 
 # OS
 .DS_Store
