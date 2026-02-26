@@ -60,25 +60,27 @@ type Selection struct {
 
 // Browser provides an interactive file browser with cursor-based selection.
 type Browser struct {
-	client storage.Client
-	scheme uri.Scheme
-	bucket string
-	prefix string
-	fd     int
-	in     *os.File
-	out    io.Writer
+	client            storage.Client
+	scheme            uri.Scheme
+	bucket            string
+	prefix            string
+	bucketListEnabled bool
+	fd                int
+	in                *os.File
+	out               io.Writer
 }
 
 // New creates a new Browser.
 func New(client storage.Client, u *uri.URI, in *os.File, out io.Writer) *Browser {
 	return &Browser{
-		client: client,
-		scheme: u.Scheme,
-		bucket: u.Bucket,
-		prefix: u.Key,
-		fd:     int(in.Fd()),
-		in:     in,
-		out:    out,
+		client:            client,
+		scheme:            u.Scheme,
+		bucket:            u.Bucket,
+		prefix:            u.Key,
+		bucketListEnabled: u.IsBucketList(),
+		fd:                int(in.Fd()),
+		in:                in,
+		out:               out,
 	}
 }
 
@@ -95,6 +97,18 @@ func (b *Browser) Run(ctx context.Context) (*Selection, error) {
 
 	cursor := 0
 	for {
+		// Bucket list mode
+		if b.bucket == "" {
+			sel, done, err := b.runBucketList(ctx, &cursor)
+			if err != nil {
+				return nil, err
+			}
+			if done {
+				return sel, nil
+			}
+			continue
+		}
+
 		entries, err := b.client.List(ctx, b.bucket, b.prefix, "/")
 		if err != nil {
 			return nil, fmt.Errorf("listing objects: %w", err)
@@ -133,7 +147,10 @@ func (b *Browser) Run(ctx context.Context) (*Selection, error) {
 		}
 
 		raw := fmt.Sprintf("%s://%s/%s", b.scheme, b.bucket, sel.entry.Key)
-		u, _ := uri.Parse(raw)
+		u, err := uri.Parse(raw)
+		if err != nil {
+			return nil, fmt.Errorf("parsing selected URI: %w", err)
+		}
 		return &Selection{
 			Action: ActionEdit,
 			URI:    u,
@@ -154,7 +171,7 @@ func (b *Browser) buildItems(entries []storage.ListEntry) []item {
 			isDir: e.IsDir,
 		})
 	}
-	if b.prefix != "" {
+	if b.prefix != "" || b.bucketListEnabled {
 		items = append(items, item{label: "..", isNav: true, navID: "up"})
 	}
 	items = append(items, item{label: "quit", isNav: true, navID: "quit"})
@@ -307,11 +324,15 @@ func (b *Browser) renderFiltered(items []item, visible []int, cursor int, filter
 	b.w("%s%s", ansiHome, ansiClearScreen)
 
 	// Header
-	p := b.prefix
-	if p == "" {
-		p = "/"
+	if b.bucket == "" {
+		b.w("\r\n  %s%s%s://%s\r\n", ansiBold, ansiCyan, b.scheme, ansiReset)
+	} else {
+		p := b.prefix
+		if p == "" {
+			p = "/"
+		}
+		b.w("\r\n  %s%s%s://%s/%s%s\r\n", ansiBold, ansiCyan, b.scheme, b.bucket, p, ansiReset)
 	}
-	b.w("\r\n  %s%s%s://%s/%s%s\r\n", ansiBold, ansiCyan, b.scheme, b.bucket, p, ansiReset)
 
 	// Filter bar
 	if filtering {
@@ -385,15 +406,57 @@ func (b *Browser) renderFile(it item, selected bool) {
 
 func (b *Browser) goUp() {
 	if b.prefix == "" {
+		if b.bucketListEnabled {
+			b.bucket = ""
+		}
 		return
 	}
+	// Remove trailing slash
 	p := strings.TrimSuffix(b.prefix, "/")
+	// Go to parent
 	parent := path.Dir(p)
 	if parent == "." {
 		b.prefix = ""
 	} else {
 		b.prefix = parent + "/"
 	}
+}
+
+// runBucketList displays a list of buckets using the cursor-based UI.
+// Returns (selection, done, error). done=true means the caller should return.
+func (b *Browser) runBucketList(ctx context.Context, cursor *int) (*Selection, bool, error) {
+	buckets, err := b.client.ListBuckets(ctx)
+	if err != nil {
+		return nil, true, fmt.Errorf("listing buckets: %w", err)
+	}
+
+	var items []item
+	for _, name := range buckets {
+		items = append(items, item{
+			label: name,
+			isDir: true,
+		})
+	}
+	items = append(items, item{label: "quit", isNav: true, navID: "quit"})
+
+	if *cursor >= len(items) {
+		*cursor = len(items) - 1
+	}
+
+	idx, quit := b.handleInput(items, *cursor)
+	if quit {
+		return &Selection{Action: ActionQuit}, true, nil
+	}
+
+	sel := items[idx]
+	if sel.isNav && sel.navID == "quit" {
+		return &Selection{Action: ActionQuit}, true, nil
+	}
+
+	b.bucket = sel.label
+	b.prefix = ""
+	*cursor = 0
+	return nil, false, nil
 }
 
 func formatSize(size int64) string {

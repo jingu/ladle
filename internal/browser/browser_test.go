@@ -38,6 +38,35 @@ func TestFilterIndices(t *testing.T) {
 	}
 }
 
+func TestGoUp(t *testing.T) {
+	tests := []struct {
+		name              string
+		bucket            string
+		prefix            string
+		bucketListEnabled bool
+		expectedBucket    string
+		expectedPrefix    string
+	}{
+		{"root stays root", "b", "", false, "b", ""},
+		{"one level up to root", "b", "dir/", false, "b", ""},
+		{"nested to parent", "b", "a/b/c/", false, "b", "a/b/"},
+		{"root to bucket list", "b", "", true, "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := &Browser{bucket: tt.bucket, prefix: tt.prefix, bucketListEnabled: tt.bucketListEnabled}
+			b.goUp()
+			if b.bucket != tt.expectedBucket {
+				t.Errorf("goUp bucket: got %q, want %q", b.bucket, tt.expectedBucket)
+			}
+			if b.prefix != tt.expectedPrefix {
+				t.Errorf("goUp prefix: got %q, want %q", b.prefix, tt.expectedPrefix)
+			}
+		})
+	}
+}
+
 func TestFormatSize(t *testing.T) {
 	tests := []struct {
 		size     int64

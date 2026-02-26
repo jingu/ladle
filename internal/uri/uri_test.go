@@ -22,7 +22,8 @@ func TestParse(t *testing.T) {
 		{"r2://mybucket/file.txt", SchemeR2, "mybucket", "file.txt", false, false},
 		{"invalid", "", "", "", false, true},
 		{"http://example.com", "", "", "", false, true},
-		{"s3://", "", "", "", false, true},
+		{"s3://", SchemeS3, "", "", true, false},
+		{"s3:///path", "", "", "", false, true},
 	}
 
 	for _, tt := range tests {
@@ -48,6 +49,28 @@ func TestParse(t *testing.T) {
 			}
 			if u.IsDirectory() != tt.isDir {
 				t.Errorf("isDir: got %v, want %v", u.IsDirectory(), tt.isDir)
+			}
+		})
+	}
+}
+
+func TestIsBucketList(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"s3://", true},
+		{"s3://mybucket", false},
+		{"s3://mybucket/key", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			u, err := Parse(tt.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := u.IsBucketList(); got != tt.want {
+				t.Errorf("IsBucketList(): got %v, want %v", got, tt.want)
 			}
 		})
 	}
