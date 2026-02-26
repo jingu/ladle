@@ -8,6 +8,7 @@ import (
 	"path"
 	"strings"
 
+	"github.com/jingu/ladle/internal/spinner"
 	"github.com/jingu/ladle/internal/storage"
 	"github.com/jingu/ladle/internal/uri"
 )
@@ -53,10 +54,14 @@ func New(client storage.Client, u *uri.URI, in io.Reader, out io.Writer) *Browse
 // selected for editing, or nil if the user quit.
 func (b *Browser) Run(ctx context.Context) (*Selection, error) {
 	for {
+		sp := spinner.New(b.out, "Loading ...")
+		sp.Start()
 		entries, err := b.client.List(ctx, b.bucket, b.prefix, "/")
 		if err != nil {
+			sp.Stop()
 			return nil, fmt.Errorf("listing objects: %w", err)
 		}
+		sp.Stop()
 
 		if len(entries) == 0 {
 			fmt.Fprintf(b.out, "  (empty)\n")
