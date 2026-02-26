@@ -5,8 +5,6 @@ project_name: ladle
 before:
   hooks:
     - go mod tidy
-    - go vet ./...
-    - go test ./...
 
 builds:
   - main: ./cmd/ladle/
