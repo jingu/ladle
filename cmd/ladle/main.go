@@ -406,7 +406,7 @@ func handleCompletePath(ctx context.Context, client storage.Client, u *uri.URI) 
 }
 
 func confirm(in io.Reader, out io.Writer, prompt string) bool {
-	fmt.Fprintf(out, "%s [y/N]: ", prompt)
+	_, _ = fmt.Fprintf(out, "%s [y/N]: ", prompt)
 	scanner := bufio.NewScanner(in)
 	if !scanner.Scan() {
 		return false
