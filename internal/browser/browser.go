@@ -66,7 +66,7 @@ type Browser struct {
 	prefix            string
 	bucketListEnabled bool
 	fd                int
-	in                *os.File
+	in                io.Reader
 	out               io.Writer
 }
 
@@ -95,6 +95,11 @@ func (b *Browser) Run(ctx context.Context) (*Selection, error) {
 	_, _ = fmt.Fprint(b.out, ansiAltScreenOn+ansiHideCursor)
 	defer func() { _, _ = fmt.Fprint(b.out, ansiShowCursor+ansiAltScreenOff) }()
 
+	return b.runLoop(ctx)
+}
+
+// runLoop contains the main browser loop, separated from terminal setup for testability.
+func (b *Browser) runLoop(ctx context.Context) (*Selection, error) {
 	cursor := 0
 	for {
 		// Bucket list mode
