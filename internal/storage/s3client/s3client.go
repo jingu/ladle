@@ -224,11 +224,11 @@ func (c *S3Client) ListBuckets(ctx context.Context) ([]string, error) {
 	return names, nil
 }
 
-// encodeKeySegments URL-encodes each path segment of an S3 key.
+// encodeKeySegments URL-encodes each path segment of an S3 key per RFC 3986.
 func encodeKeySegments(key string) string {
 	segments := strings.Split(key, "/")
 	for i, seg := range segments {
-		segments[i] = url.PathEscape(seg)
+		segments[i] = strings.ReplaceAll(url.QueryEscape(seg), "+", "%20")
 	}
 	return strings.Join(segments, "/")
 }

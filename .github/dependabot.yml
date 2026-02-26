@@ -8,6 +8,7 @@ updates:
       aws-sdk:
         patterns:
           - "github.com/aws/*"
+          - "github.com/aws/**"
 
   - package-ecosystem: github-actions
     directory: /

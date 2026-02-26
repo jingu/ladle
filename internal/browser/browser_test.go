@@ -14,7 +14,10 @@ func TestRunFileSelection(t *testing.T) {
 	mock := storage.NewMockClient()
 	mock.PutObject("mybucket", "file.txt", []byte("hello"), nil)
 
-	u, _ := uri.Parse("s3://mybucket/")
+	u, err := uri.Parse("s3://mybucket/")
+	if err != nil {
+		t.Fatal(err)
+	}
 	input := strings.NewReader("1\n")
 	out := &bytes.Buffer{}
 
@@ -38,7 +41,10 @@ func TestRunQuit(t *testing.T) {
 	mock := storage.NewMockClient()
 	mock.PutObject("mybucket", "file.txt", []byte("hello"), nil)
 
-	u, _ := uri.Parse("s3://mybucket/")
+	u, err := uri.Parse("s3://mybucket/")
+	if err != nil {
+		t.Fatal(err)
+	}
 	input := strings.NewReader("q\n")
 	out := &bytes.Buffer{}
 
