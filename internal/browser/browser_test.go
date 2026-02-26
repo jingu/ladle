@@ -1,7 +1,6 @@
 package browser
 
 import (
-	"bytes"
 	"context"
 	"strings"
 	"testing"
@@ -10,71 +9,30 @@ import (
 	"github.com/jingu/ladle/internal/uri"
 )
 
-func TestRunFileSelection(t *testing.T) {
-	mock := storage.NewMockClient()
-	mock.PutObject("mybucket", "file.txt", []byte("hello"), nil)
-
-	u, err := uri.Parse("s3://mybucket/")
-	if err != nil {
-		t.Fatal(err)
-	}
-	input := strings.NewReader("1\n")
-	out := &bytes.Buffer{}
-
-	b := New(mock, u, input, out)
-	sel, err := b.Run(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if sel.Action != ActionEdit {
-		t.Fatalf("expected ActionEdit, got %d", sel.Action)
-	}
-	if sel.URI.Bucket != "mybucket" {
-		t.Errorf("expected bucket %q, got %q", "mybucket", sel.URI.Bucket)
-	}
-	if sel.URI.Key != "file.txt" {
-		t.Errorf("expected key %q, got %q", "file.txt", sel.URI.Key)
-	}
-}
-
-func TestRunQuit(t *testing.T) {
-	mock := storage.NewMockClient()
-	mock.PutObject("mybucket", "file.txt", []byte("hello"), nil)
-
-	u, err := uri.Parse("s3://mybucket/")
-	if err != nil {
-		t.Fatal(err)
-	}
-	input := strings.NewReader("q\n")
-	out := &bytes.Buffer{}
-
-	b := New(mock, u, input, out)
-	sel, err := b.Run(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if sel.Action != ActionQuit {
-		t.Fatalf("expected ActionQuit, got %d", sel.Action)
-	}
-}
-
 func TestGoUp(t *testing.T) {
 	tests := []struct {
-		name     string
-		prefix   string
-		expected string
+		name              string
+		bucket            string
+		prefix            string
+		bucketListEnabled bool
+		expectedBucket    string
+		expectedPrefix    string
 	}{
-		{"root stays root", "", ""},
-		{"one level up to root", "dir/", ""},
-		{"nested to parent", "a/b/c/", "a/b/"},
+		{"root stays root", "b", "", false, "b", ""},
+		{"one level up to root", "b", "dir/", false, "b", ""},
+		{"nested to parent", "b", "a/b/c/", false, "b", "a/b/"},
+		{"root to bucket list", "b", "", true, "", ""},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			b := &Browser{prefix: tt.prefix}
+			b := &Browser{bucket: tt.bucket, prefix: tt.prefix, bucketListEnabled: tt.bucketListEnabled}
 			b.goUp()
-			if b.prefix != tt.expected {
-				t.Errorf("goUp(%q): got %q, want %q", tt.prefix, b.prefix, tt.expected)
+			if b.bucket != tt.expectedBucket {
+				t.Errorf("goUp bucket: got %q, want %q", b.bucket, tt.expectedBucket)
+			}
+			if b.prefix != tt.expectedPrefix {
+				t.Errorf("goUp prefix: got %q, want %q", b.prefix, tt.expectedPrefix)
 			}
 		})
 	}
@@ -98,6 +56,62 @@ func TestFormatSize(t *testing.T) {
 			got := formatSize(tt.size)
 			if got != tt.expected {
 				t.Errorf("formatSize(%d): got %q, want %q", tt.size, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestNonExistentDirectoryError(t *testing.T) {
+	mock := storage.NewMockClient()
+	// Bucket exists but no objects under "nonexistent/"
+	mock.PutObject("mybucket", "file.txt", []byte("hello"), nil)
+
+	u, err := uri.Parse("s3://mybucket/nonexistent/")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b := New(mock, u, strings.NewReader(""), nil, "test")
+	err = b.Run(context.Background(), func(u *uri.URI) error { return nil })
+	if err == nil {
+		t.Fatal("expected error for non-existent directory")
+	}
+	if !strings.Contains(err.Error(), "directory not found") {
+		t.Errorf("expected 'directory not found' error, got: %v", err)
+	}
+}
+
+func TestIconForEntry(t *testing.T) {
+	tests := []struct {
+		name     string
+		isDir    bool
+		isBucket bool
+		expected string
+	}{
+		{"dir/", true, false, iconDir},
+		{"mybucket", false, true, iconBucket},
+		{"file.txt", false, false, iconText},
+		{"file.md", false, false, iconText},
+		{"photo.png", false, false, iconImage},
+		{"photo.jpg", false, false, iconImage},
+		{"archive.zip", false, false, iconArchive},
+		{"app.exe", false, false, iconArchive},
+		{"data.json", false, false, iconText},
+		{"index.html", false, false, iconText},
+		{"style.css", false, false, iconText},
+		{"app.js", false, false, iconText},
+		{"app.ts", false, false, iconText},
+		{"component.jsx", false, false, iconText},
+		{"component.tsx", false, false, iconText},
+		{"config.yaml", false, false, iconText},
+		{"unknown", false, false, iconFile},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := iconForEntry(tt.name, tt.isDir, tt.isBucket)
+			if got != tt.expected {
+				t.Errorf("iconForEntry(%q): got %q, want %q", tt.name, got, tt.expected)
 			}
 		})
 	}

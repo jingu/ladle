@@ -17,6 +17,12 @@ ladle downloads a file from S3 (or other cloud storage), opens it in your prefer
 
 ## Installation
 
+### Homebrew
+
+```bash
+brew install jingu/tap/ladle
+```
+
 ### From source
 
 ```bash
@@ -148,7 +154,7 @@ ladle/
 - `--version-id` for S3 versioned objects
 - Multi-file batch editing
 - `ladle compare` for diffing two remote files
-- Homebrew tap
+
 
 ## License
 

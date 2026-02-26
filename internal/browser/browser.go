@@ -8,6 +8,7 @@ import (
 	"path"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jingu/ladle/internal/storage"
 	"github.com/jingu/ladle/internal/uri"
 )
@@ -27,113 +28,130 @@ type Selection struct {
 	URI    *uri.URI
 }
 
+// EditFunc is called when a file is selected for editing.
+// It receives the parsed URI and should perform the edit workflow.
+type EditFunc func(u *uri.URI) error
+
 // Browser provides an interactive file browser.
 type Browser struct {
-	client storage.Client
-	scheme uri.Scheme
-	bucket string
-	prefix string
-	in     io.Reader
-	out    io.Writer
+	client            storage.Client
+	scheme            uri.Scheme
+	bucket            string
+	prefix            string
+	bucketListEnabled bool
+	in                io.Reader
+	out               io.Writer
+	version           string
 }
 
 // New creates a new Browser.
-func New(client storage.Client, u *uri.URI, in io.Reader, out io.Writer) *Browser {
+func New(client storage.Client, u *uri.URI, in io.Reader, out io.Writer, version string) *Browser {
 	return &Browser{
-		client: client,
-		scheme: u.Scheme,
-		bucket: u.Bucket,
-		prefix: u.Key,
-		in:     in,
-		out:    out,
+		client:            client,
+		scheme:            u.Scheme,
+		bucket:            u.Bucket,
+		prefix:            u.Key,
+		bucketListEnabled: true,
+		in:                in,
+		out:               out,
+		version:           version,
 	}
 }
 
-// Run starts the interactive browser loop. It returns the URI of a file
-// selected for editing, or nil if the user quit.
-func (b *Browser) Run(ctx context.Context) (*Selection, error) {
-	for {
-		entries, err := b.client.List(ctx, b.bucket, b.prefix, "/")
-		if err != nil {
-			return nil, fmt.Errorf("listing objects: %w", err)
-		}
-
-		if len(entries) == 0 {
-			fmt.Fprintf(b.out, "  (empty)\n")
-		}
-
-		b.printHeader()
-		for i, e := range entries {
-			name := e.Key
-			// Strip prefix to show relative names
-			name = strings.TrimPrefix(name, b.prefix)
-			if name == "" {
-				continue
-			}
-			if e.IsDir {
-				fmt.Fprintf(b.out, "  [%d] %s\n", i+1, name)
-			} else {
-				fmt.Fprintf(b.out, "  [%d] %s  (%s)\n", i+1, name, formatSize(e.Size))
-			}
-		}
-		fmt.Fprintf(b.out, "\n")
-
-		// Show navigation options
-		if b.prefix != "" {
-			fmt.Fprintf(b.out, "  [..] Go up\n")
-		}
-		fmt.Fprintf(b.out, "  [q]  Quit\n\n")
-		fmt.Fprintf(b.out, "Select: ")
-
-		var input string
-		if _, err := fmt.Fscan(b.in, &input); err != nil {
-			return &Selection{Action: ActionQuit}, nil
-		}
-		input = strings.TrimSpace(input)
-
-		switch input {
-		case "q", "Q":
-			return &Selection{Action: ActionQuit}, nil
-		case "..":
-			b.goUp()
-			continue
-		}
-
-		var idx int
-		if _, err := fmt.Sscanf(input, "%d", &idx); err != nil || idx < 1 || idx > len(entries) {
-			fmt.Fprintf(b.out, "Invalid selection.\n\n")
-			continue
-		}
-
-		entry := entries[idx-1]
-		if entry.IsDir {
-			b.prefix = entry.Key
-			continue
-		}
-
-		// File selected
-		raw := fmt.Sprintf("%s://%s/%s", b.scheme, b.bucket, entry.Key)
-		u, err := uri.Parse(raw)
-		if err != nil {
-			return nil, fmt.Errorf("parsing selected URI: %w", err)
-		}
-		return &Selection{
-			Action: ActionEdit,
-			URI:    u,
-		}, nil
+// Run starts the interactive browser. It runs a single TUI program.
+// editFn is called (with TUI suspended) when a file is selected.
+func (b *Browser) Run(ctx context.Context, editFn EditFunc) error {
+	nodes, header, canGoUp, err := b.buildView(ctx)
+	if err != nil {
+		return err
 	}
+
+	m := model{
+		nodes:   nodes,
+		header:  header,
+		version: b.version,
+		canGoUp: canGoUp,
+		client:  b.client,
+		ctx:     ctx,
+		bucket:  b.bucket,
+		scheme:  string(b.scheme),
+		browser: b,
+		editFn:  editFn,
+	}
+
+	p := tea.NewProgram(m, tea.WithInput(b.in), tea.WithOutput(b.out))
+	_, err = p.Run()
+	if err != nil {
+		return fmt.Errorf("running browser: %w", err)
+	}
+	return nil
 }
 
-func (b *Browser) printHeader() {
-	p := b.prefix
-	if p == "" {
-		p = "/"
+// buildView returns the initial nodes, header, and canGoUp for the current state.
+func (b *Browser) buildView(ctx context.Context) ([]*node, string, bool, error) {
+	if b.bucket == "" {
+		// Bucket list mode
+		buckets, err := b.client.ListBuckets(ctx)
+		if err != nil {
+			return nil, "", false, fmt.Errorf("listing buckets: %w", err)
+		}
+		nodes := make([]*node, len(buckets))
+		for i, name := range buckets {
+			nodes[i] = &node{entry: entry{name: name, isBucket: true}}
+		}
+		header := fmt.Sprintf("%s://", b.scheme)
+		return nodes, header, false, nil
 	}
-	fmt.Fprintf(b.out, "\n%s://%s/%s\n\n", b.scheme, b.bucket, p)
+
+	// Object list mode
+	nodes, err := b.loadEntries(ctx, b.bucket, b.prefix, 0)
+	if err != nil {
+		return nil, "", false, fmt.Errorf("listing objects: %w", err)
+	}
+	if len(nodes) == 0 && b.prefix != "" {
+		return nil, "", false, fmt.Errorf("directory not found: %s://%s/%s", b.scheme, b.bucket, b.prefix)
+	}
+
+	header := fmt.Sprintf("%s://%s", b.scheme, b.bucket)
+	if b.prefix != "" {
+		header += "/" + strings.TrimSuffix(b.prefix, "/")
+	}
+	canGoUp := b.prefix != "" || b.bucketListEnabled
+	return nodes, header, canGoUp, nil
+}
+
+// loadEntries fetches storage entries and converts them to tree nodes.
+func (b *Browser) loadEntries(ctx context.Context, bucket, prefix string, depth int) ([]*node, error) {
+	entries, err := b.client.List(ctx, bucket, prefix, "/")
+	if err != nil {
+		return nil, err
+	}
+
+	var nodes []*node
+	for _, e := range entries {
+		name := strings.TrimPrefix(e.Key, prefix)
+		if name == "" {
+			continue
+		}
+		nodes = append(nodes, &node{
+			entry: entry{
+				name:         name,
+				key:          e.Key,
+				isDir:        e.IsDir,
+				size:         e.Size,
+				lastModified: e.LastModified,
+			},
+			depth: depth,
+		})
+	}
+	return nodes, nil
 }
 
 func (b *Browser) goUp() {
 	if b.prefix == "" {
+		if b.bucketListEnabled {
+			b.bucket = ""
+		}
 		return
 	}
 	// Remove trailing slash
