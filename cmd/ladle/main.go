@@ -128,7 +128,10 @@ func run(cmd *cobra.Command, args []string, f *flags) error {
 		entries, err := client.List(ctx, u.Bucket, u.Key+"/", "/")
 		if err == nil && len(entries) > 0 {
 			// It's a directory prefix — redirect to browser mode
-			dirURI, _ := uri.Parse(fmt.Sprintf("%s://%s/%s/", u.Scheme, u.Bucket, u.Key))
+			dirURI, err := uri.Parse(fmt.Sprintf("%s://%s/%s/", u.Scheme, u.Bucket, u.Key))
+			if err != nil {
+				return err
+			}
 			return runBrowser(ctx, client, dirURI, f)
 		}
 	}

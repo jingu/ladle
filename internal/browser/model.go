@@ -31,23 +31,6 @@ type node struct {
 	children []*node
 }
 
-// resultAction indicates what the model decided.
-type resultAction int
-
-const (
-	resultNone resultAction = iota
-	resultEdit
-	resultGoUp
-	resultQuit
-)
-
-// result holds the outcome from the TUI.
-type result struct {
-	action resultAction
-	key    string // object key for edit
-	bucket string // bucket name for bucket selection
-}
-
 // childrenLoadedMsg carries the loaded children back to Update.
 type childrenLoadedMsg struct {
 	parentKey string // identifies which node to populate
@@ -104,13 +87,12 @@ type model struct {
 	filtering  bool
 	filterText string
 
-	result       *result
 	quitting     bool
 	loading      bool
 	spinnerFrame int
 
 	client  storage.Client
-	ctx     context.Context
+	ctx     context.Context // stored because bubbletea Cmd closures need it
 	bucket  string
 	scheme  string
 	browser *Browser
@@ -218,7 +200,12 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		} else {
 			// File selected — exec edit with TUI suspended
-			return m, m.execEdit(n.entry.key)
+			cmd, err := m.execEdit(n.entry.key)
+			if err != nil {
+				m.message = err.Error()
+				return m, nil
+			}
+			return m, cmd
 		}
 	case "right", "l", "ctrl+f":
 		if len(visible) > 0 {
@@ -325,17 +312,16 @@ func (m model) handleFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // execEdit returns a tea.Exec command that suspends the TUI and runs the edit.
-func (m model) execEdit(key string) tea.Cmd {
+func (m model) execEdit(key string) (tea.Cmd, error) {
 	raw := fmt.Sprintf("%s://%s/%s", m.scheme, m.bucket, key)
 	u, err := uri.Parse(raw)
 	if err != nil {
-		m.message = err.Error()
-		return nil
+		return nil, err
 	}
 	cmd := &editCommand{editFn: m.editFn, uri: u}
 	return tea.Exec(cmd, func(err error) tea.Msg {
 		return editDoneMsg{err: err}
-	})
+	}), nil
 }
 
 // navigateUp triggers goUp on the browser and rebuilds the view.
@@ -364,6 +350,7 @@ func (m model) navigateToBucket(bucket string) tea.Cmd {
 func (m model) handleChildrenLoaded(msg childrenLoadedMsg) (tea.Model, tea.Cmd) {
 	m.loading = false
 	if msg.err != nil {
+		m.message = msg.err.Error()
 		return m, nil
 	}
 	for _, n := range m.allNodes() {

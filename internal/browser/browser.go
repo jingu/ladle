@@ -13,21 +13,6 @@ import (
 	"github.com/jingu/ladle/internal/uri"
 )
 
-// Action represents what the user wants to do after selecting an item.
-type Action int
-
-const (
-	ActionEdit Action = iota
-	ActionBrowse
-	ActionQuit
-)
-
-// Selection holds the user's selection in the browser.
-type Selection struct {
-	Action Action
-	URI    *uri.URI
-}
-
 // EditFunc is called when a file is selected for editing.
 // It receives the parsed URI and should perform the edit workflow.
 type EditFunc func(u *uri.URI) error
