@@ -32,11 +32,22 @@ func Generate(w io.Writer, shell Shell) error {
 func generateBash(w io.Writer) error {
 	script := `# ladle bash completion
 _ladle_completions() {
-    local cur prev opts
+    local cur prev opts cmd
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
+    cmd="${COMP_WORDS[0]}"
     opts="--meta --editor --profile --region --endpoint-url --no-sign-request --yes --force --dry-run --help --version"
+
+    # Extract --profile value from command line
+    local profile_arg=""
+    for ((i=0; i<${#COMP_WORDS[@]}; i++)); do
+        if [[ "${COMP_WORDS[$i]}" == "--profile" ]]; then
+            profile_arg="--profile ${COMP_WORDS[$((i+1))]}"
+        elif [[ "${COMP_WORDS[$i]}" == --profile=* ]]; then
+            profile_arg="--profile ${COMP_WORDS[$i]#--profile=}"
+        fi
+    done
 
     # Complete S3 URIs
     if [[ "$cur" == s3://* ]]; then
@@ -46,30 +57,22 @@ _ladle_completions() {
         if [[ "$bucket_and_path" == */* ]]; then
             # Complete keys within bucket
             local prefix="${bucket_and_path#*/}"
-            local profile_arg=""
-            for ((i=0; i<${#COMP_WORDS[@]}; i++)); do
-                if [[ "${COMP_WORDS[$i]}" == "--profile" ]]; then
-                    profile_arg="--profile ${COMP_WORDS[$((i+1))]}"
-                fi
-            done
-            local keys
-            keys=$(ladle --complete-path $profile_arg "s3://${bucket}/${prefix}" 2>/dev/null)
-            while IFS= read -r key; do
-                COMPREPLY+=("$key")
-            done <<< "$keys"
+            local result
+            result=$("$cmd" --complete-path $profile_arg "s3://${bucket}/${prefix}" 2>/dev/null)
+            if [[ -n "$result" ]]; then
+                while IFS= read -r line; do
+                    COMPREPLY+=("$line")
+                done <<< "$result"
+            fi
         else
             # Complete bucket names
-            local profile_arg=""
-            for ((i=0; i<${#COMP_WORDS[@]}; i++)); do
-                if [[ "${COMP_WORDS[$i]}" == "--profile" ]]; then
-                    profile_arg="--profile ${COMP_WORDS[$((i+1))]}"
-                fi
-            done
-            local buckets
-            buckets=$(ladle --complete-bucket $profile_arg "$bucket" 2>/dev/null)
-            while IFS= read -r b; do
-                COMPREPLY+=("s3://${b}/")
-            done <<< "$buckets"
+            local result
+            result=$("$cmd" --complete-bucket $profile_arg "s3://$bucket" 2>/dev/null)
+            if [[ -n "$result" ]]; then
+                while IFS= read -r b; do
+                    COMPREPLY+=("s3://${b}/")
+                done <<< "$result"
+            fi
         fi
         return 0
     fi
@@ -86,6 +89,7 @@ _ladle_completions() {
     fi
 }
 complete -o nospace -F _ladle_completions ladle
+complete -o nospace -F _ladle_completions ./ladle
 `
 	_, err := fmt.Fprint(w, script)
 	return err
@@ -115,6 +119,18 @@ _ladle() {
 
 _ladle_uri() {
     local cur="${words[CURRENT]}"
+    local cmd="${words[1]}"
+
+    # Extract --profile value from command line
+    local -a profile_arg
+    local -i i
+    for ((i=1; i<$#words; i++)); do
+        if [[ "${words[$i]}" == "--profile" ]]; then
+            profile_arg=(--profile "${words[$((i+1))]}")
+        elif [[ "${words[$i]}" == --profile=* ]]; then
+            profile_arg=(--profile "${words[$i]#--profile=}")
+        fi
+    done
 
     if [[ "$cur" == s3://* ]]; then
         local bucket_and_path="${cur#s3://}"
@@ -122,26 +138,12 @@ _ladle_uri() {
 
         if [[ "$bucket_and_path" == */* ]]; then
             local prefix="${bucket_and_path#*/}"
-            local profile_arg=""
-            local -i i
-            for ((i=1; i<$#words; i++)); do
-                if [[ "${words[$i]}" == "--profile" ]]; then
-                    profile_arg="--profile ${words[$((i+1))]}"
-                fi
-            done
-            local -a keys
-            keys=(${(f)"$(ladle --complete-path $profile_arg "s3://${bucket}/${prefix}" 2>/dev/null)"})
-            compadd -S '' -q -- $keys
+            local -a completions
+            completions=(${(f)"$("$cmd" --complete-path $profile_arg "s3://${bucket}/${prefix}" 2>/dev/null)"})
+            compadd -S '' -q -- $completions
         else
-            local profile_arg=""
-            local -i i
-            for ((i=1; i<$#words; i++)); do
-                if [[ "${words[$i]}" == "--profile" ]]; then
-                    profile_arg="--profile ${words[$((i+1))]}"
-                fi
-            done
             local -a buckets
-            buckets=(${(f)"$(ladle --complete-bucket $profile_arg "$bucket" 2>/dev/null)"})
+            buckets=(${(f)"$("$cmd" --complete-bucket $profile_arg "s3://$bucket" 2>/dev/null)"})
             compadd -S '/' -q -- ${buckets[@]/#/s3://}
         fi
     else
@@ -150,6 +152,7 @@ _ladle_uri() {
 }
 
 compdef _ladle ladle
+compdef _ladle ./ladle
 `
 	_, err := fmt.Fprint(w, script)
 	return err
@@ -171,26 +174,25 @@ complete -c ladle -l version -d 'Show version'
 
 function __ladle_complete_uri
     set -l cur (commandline -ct)
+    set -l cmd (commandline -po)[1]
+
+    # Extract --profile value from command line
+    set -l profile_arg
+    set -l tokens (commandline -po)
+    for i in (seq (count $tokens))
+        if test "$tokens[$i]" = "--profile"
+            set profile_arg --profile $tokens[(math $i + 1)]
+        else if string match -q '--profile=*' -- "$tokens[$i]"
+            set profile_arg --profile (string replace '--profile=' '' -- "$tokens[$i]")
+        end
+    end
+
     if string match -q 's3://*' -- $cur
         set -l bucket_and_path (string replace 's3://' '' -- $cur)
         if string match -q '*/*' -- $bucket_and_path
-            set -l profile_arg
-            set -l tokens (commandline -po)
-            for i in (seq (count $tokens))
-                if test "$tokens[$i]" = "--profile"
-                    set profile_arg --profile $tokens[(math $i + 1)]
-                end
-            end
-            ladle --complete-path $profile_arg $cur 2>/dev/null
+            $cmd --complete-path $profile_arg $cur 2>/dev/null
         else
-            set -l profile_arg
-            set -l tokens (commandline -po)
-            for i in (seq (count $tokens))
-                if test "$tokens[$i]" = "--profile"
-                    set profile_arg --profile $tokens[(math $i + 1)]
-                end
-            end
-            for b in (ladle --complete-bucket $profile_arg $bucket_and_path 2>/dev/null)
+            for b in ($cmd --complete-bucket $profile_arg "s3://$bucket_and_path" 2>/dev/null)
                 echo "s3://$b/"
             end
         end
@@ -200,6 +202,7 @@ function __ladle_complete_uri
 end
 
 complete -c ladle -a '(__ladle_complete_uri)' -f
+complete -c ./ladle -a '(__ladle_complete_uri)' -f
 `
 	_, err := fmt.Fprint(w, script)
 	return err

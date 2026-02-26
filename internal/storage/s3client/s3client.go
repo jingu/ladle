@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -137,7 +139,8 @@ func (c *S3Client) HeadObject(ctx context.Context, bucket, key string) (*storage
 }
 
 func (c *S3Client) UpdateMetadata(ctx context.Context, bucket, key string, meta *storage.ObjectMetadata) error {
-	source := fmt.Sprintf("%s/%s", bucket, key)
+	encodedKey := encodeKeySegments(key)
+	source := fmt.Sprintf("%s/%s", bucket, encodedKey)
 	input := &s3.CopyObjectInput{
 		Bucket:            aws.String(bucket),
 		Key:               aws.String(key),
@@ -183,19 +186,23 @@ func (c *S3Client) List(ctx context.Context, bucket, prefix, delimiter string) (
 		if err != nil {
 			return nil, fmt.Errorf("listing s3://%s/%s: %w", bucket, prefix, err)
 		}
-		for _, prefix := range page.CommonPrefixes {
-			if prefix.Prefix != nil {
+		for _, cp := range page.CommonPrefixes {
+			if cp.Prefix != nil {
 				entries = append(entries, storage.ListEntry{
-					Key:   *prefix.Prefix,
+					Key:   *cp.Prefix,
 					IsDir: true,
 				})
 			}
 		}
 		for _, obj := range page.Contents {
 			if obj.Key != nil {
+				var size int64
+				if obj.Size != nil {
+					size = *obj.Size
+				}
 				entries = append(entries, storage.ListEntry{
 					Key:  *obj.Key,
-					Size: *obj.Size,
+					Size: size,
 				})
 			}
 		}
@@ -215,4 +222,13 @@ func (c *S3Client) ListBuckets(ctx context.Context) ([]string, error) {
 		}
 	}
 	return names, nil
+}
+
+// encodeKeySegments URL-encodes each path segment of an S3 key per RFC 3986.
+func encodeKeySegments(key string) string {
+	segments := strings.Split(key, "/")
+	for i, seg := range segments {
+		segments[i] = strings.ReplaceAll(url.QueryEscape(seg), "+", "%20")
+	}
+	return strings.Join(segments, "/")
 }
