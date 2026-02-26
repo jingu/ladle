@@ -216,7 +216,7 @@ func runFileEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flag
 	// Get existing metadata to preserve it
 	existingMeta, err := client.HeadObject(ctx, u.Bucket, u.Key)
 	if err != nil {
-		// If we can't get metadata, just use content type
+		fmt.Fprintf(os.Stderr, "Warning: could not fetch metadata: %v\n", err)
 		existingMeta = &storage.ObjectMetadata{}
 	}
 	existingMeta.ContentType = ct

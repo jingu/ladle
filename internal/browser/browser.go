@@ -113,7 +113,10 @@ func (b *Browser) Run(ctx context.Context) (*Selection, error) {
 
 		// File selected
 		raw := fmt.Sprintf("%s://%s/%s", b.scheme, b.bucket, entry.Key)
-		u, _ := uri.Parse(raw)
+		u, err := uri.Parse(raw)
+		if err != nil {
+			return nil, fmt.Errorf("parsing selected URI: %w", err)
+		}
 		return &Selection{
 			Action: ActionEdit,
 			URI:    u,
