@@ -16,9 +16,9 @@ type mockAPIError struct {
 	fault   smithy.ErrorFault
 }
 
-func (e *mockAPIError) Error() string            { return fmt.Sprintf("%s: %s", e.code, e.message) }
-func (e *mockAPIError) ErrorCode() string         { return e.code }
-func (e *mockAPIError) ErrorMessage() string      { return e.message }
+func (e *mockAPIError) Error() string                 { return fmt.Sprintf("%s: %s", e.code, e.message) }
+func (e *mockAPIError) ErrorCode() string             { return e.code }
+func (e *mockAPIError) ErrorMessage() string          { return e.message }
 func (e *mockAPIError) ErrorFault() smithy.ErrorFault { return e.fault }
 
 func TestClassify_APIErrors(t *testing.T) {
