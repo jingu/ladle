@@ -21,9 +21,10 @@ const (
 	ansiDim     = "\033[2m"
 	ansiReverse = "\033[7m"
 
-	ansiCyan = "\033[36m"
-	ansiBlue = "\033[34m"
-	ansiGray = "\033[90m"
+	ansiCyan   = "\033[36m"
+	ansiBlue   = "\033[34m"
+	ansiYellow = "\033[33m"
+	ansiGray   = "\033[90m"
 
 	ansiClearScreen  = "\033[2J"
 	ansiHome         = "\033[H"
@@ -161,9 +162,20 @@ func (b *Browser) buildItems(entries []storage.ListEntry) []item {
 }
 
 // handleInput renders the item list and blocks until the user makes a selection.
-// It returns the selected index and whether the user explicitly quit (q/Ctrl+C).
+// It returns the selected index (into items) and whether the user explicitly quit.
 func (b *Browser) handleInput(items []item, cursor int) (int, bool) {
-	b.render(items, cursor)
+	filter := ""
+	filtering := false
+	visible := allIndices(len(items))
+
+	if cursor >= len(visible) {
+		cursor = len(visible) - 1
+	}
+	if cursor < 0 {
+		cursor = 0
+	}
+
+	b.renderFiltered(items, visible, cursor, filter, filtering)
 
 	buf := make([]byte, 3)
 	for {
@@ -172,39 +184,121 @@ func (b *Browser) handleInput(items []item, cursor int) (int, bool) {
 			return 0, true
 		}
 
-		if n == 1 {
-			switch buf[0] {
-			case 'q', 'Q', 3: // q, Q, Ctrl+C
-				return 0, true
-			case 13: // Enter
-				return cursor, false
-			case 'j':
-				if cursor < len(items)-1 {
-					cursor++
+		if filtering {
+			changed := false
+			if n == 1 {
+				switch buf[0] {
+				case 27: // Escape — clear filter and exit filter mode
+					filter = ""
+					filtering = false
+					changed = true
+				case 13: // Enter — exit filter mode, keep filter
+					filtering = false
+				case 127, 8: // Backspace / Ctrl+H
+					if len(filter) > 0 {
+						filter = filter[:len(filter)-1]
+						changed = true
+					}
+				default:
+					if buf[0] >= 32 && buf[0] < 127 {
+						filter += string(buf[0])
+						changed = true
+					}
 				}
-			case 'k':
-				if cursor > 0 {
-					cursor--
+			} else if n == 3 && buf[0] == 27 && buf[1] == '[' {
+				// Arrow keys work in filter mode too
+				switch buf[2] {
+				case 'A':
+					if cursor > 0 {
+						cursor--
+					}
+				case 'B':
+					if cursor < len(visible)-1 {
+						cursor++
+					}
 				}
 			}
-		} else if n == 3 && buf[0] == 27 && buf[1] == '[' {
-			switch buf[2] {
-			case 'A': // Up arrow
-				if cursor > 0 {
-					cursor--
+			if changed {
+				visible = filterIndices(items, filter)
+				cursor = 0
+			}
+		} else {
+			if n == 1 {
+				switch buf[0] {
+				case 3: // Ctrl+C
+					return 0, true
+				case 'q', 'Q':
+					return 0, true
+				case 27: // Escape — clear active filter
+					if filter != "" {
+						filter = ""
+						visible = allIndices(len(items))
+						cursor = 0
+					}
+				case 13: // Enter
+					if len(visible) == 0 {
+						continue
+					}
+					return visible[cursor], false
+				case 'j':
+					if cursor < len(visible)-1 {
+						cursor++
+					}
+				case 'k':
+					if cursor > 0 {
+						cursor--
+					}
+				case '/':
+					filtering = true
 				}
-			case 'B': // Down arrow
-				if cursor < len(items)-1 {
-					cursor++
+			} else if n == 3 && buf[0] == 27 && buf[1] == '[' {
+				switch buf[2] {
+				case 'A':
+					if cursor > 0 {
+						cursor--
+					}
+				case 'B':
+					if cursor < len(visible)-1 {
+						cursor++
+					}
 				}
 			}
 		}
 
-		b.render(items, cursor)
+		// Clamp cursor
+		if len(visible) == 0 {
+			cursor = 0
+		} else if cursor >= len(visible) {
+			cursor = len(visible) - 1
+		}
+
+		b.renderFiltered(items, visible, cursor, filter, filtering)
 	}
 }
 
-func (b *Browser) render(items []item, cursor int) {
+func allIndices(n int) []int {
+	idx := make([]int, n)
+	for i := range idx {
+		idx[i] = i
+	}
+	return idx
+}
+
+func filterIndices(items []item, filter string) []int {
+	if filter == "" {
+		return allIndices(len(items))
+	}
+	lower := strings.ToLower(filter)
+	var idx []int
+	for i, it := range items {
+		if it.isNav || strings.Contains(strings.ToLower(it.label), lower) {
+			idx = append(idx, i)
+		}
+	}
+	return idx
+}
+
+func (b *Browser) renderFiltered(items []item, visible []int, cursor int, filter string, filtering bool) {
 	fmt.Fprint(b.out, ansiHome+ansiClearScreen)
 
 	// Header
@@ -212,22 +306,36 @@ func (b *Browser) render(items []item, cursor int) {
 	if p == "" {
 		p = "/"
 	}
-	fmt.Fprintf(b.out, "\r\n  %s%s%s://%s/%s%s\r\n\r\n",
+	fmt.Fprintf(b.out, "\r\n  %s%s%s://%s/%s%s\r\n",
 		ansiBold, ansiCyan, b.scheme, b.bucket, p, ansiReset)
 
-	// Check if there are any non-nav items
+	// Filter bar
+	if filtering {
+		fmt.Fprintf(b.out, "  %s/%s %s%s\u2588%s\r\n", ansiYellow, ansiReset, filter, ansiDim, ansiReset)
+	} else if filter != "" {
+		fmt.Fprintf(b.out, "  %s/ %s%s\r\n", ansiDim, filter, ansiReset)
+	}
+
+	fmt.Fprint(b.out, "\r\n")
+
+	// Check if there are any non-nav visible items
 	hasContent := false
-	for _, it := range items {
-		if !it.isNav {
+	for _, vi := range visible {
+		if !items[vi].isNav {
 			hasContent = true
 			break
 		}
 	}
 	if !hasContent {
-		fmt.Fprintf(b.out, "    %s(empty)%s\r\n\r\n", ansiDim, ansiReset)
+		if filter != "" {
+			fmt.Fprintf(b.out, "    %s(no matches)%s\r\n", ansiDim, ansiReset)
+		} else {
+			fmt.Fprintf(b.out, "    %s(empty)%s\r\n", ansiDim, ansiReset)
+		}
 	}
 
-	for i, it := range items {
+	for i, vi := range visible {
+		it := items[vi]
 		selected := i == cursor
 		if it.isNav {
 			b.renderNav(it, selected)
@@ -239,8 +347,13 @@ func (b *Browser) render(items []item, cursor int) {
 	}
 
 	// Help line
-	fmt.Fprintf(b.out, "\r\n  %s%s  navigate    Enter  select    q  quit%s\r\n",
-		ansiDim, "\u2191\u2193/jk", ansiReset)
+	if filtering {
+		fmt.Fprintf(b.out, "\r\n  %stype to filter    Esc clear    Enter done%s\r\n",
+			ansiDim, ansiReset)
+	} else {
+		fmt.Fprintf(b.out, "\r\n  %s\u2191\u2193/jk navigate    Enter select    / filter    q quit%s\r\n",
+			ansiDim, ansiReset)
+	}
 }
 
 func (b *Browser) renderNav(it item, selected bool) {

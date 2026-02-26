@@ -1,6 +1,42 @@
 package browser
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
+
+func TestFilterIndices(t *testing.T) {
+	items := []item{
+		{label: "docs/", isDir: true},
+		{label: "config.yaml"},
+		{label: "README.md"},
+		{label: "main.go"},
+		{label: "..", isNav: true, navID: "up"},
+		{label: "quit", isNav: true, navID: "quit"},
+	}
+
+	tests := []struct {
+		name   string
+		filter string
+		want   []int
+	}{
+		{"empty filter returns all", "", []int{0, 1, 2, 3, 4, 5}},
+		{"matches file", "config", []int{1, 4, 5}},
+		{"case insensitive", "readme", []int{2, 4, 5}},
+		{"matches dir", "docs", []int{0, 4, 5}},
+		{"no match keeps nav", "zzz", []int{4, 5}},
+		{"partial match", ".go", []int{3, 4, 5}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := filterIndices(items, tt.filter)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("filterIndices(%q): got %v, want %v", tt.filter, got, tt.want)
+			}
+		})
+	}
+}
 
 func TestFormatSize(t *testing.T) {
 	tests := []struct {
