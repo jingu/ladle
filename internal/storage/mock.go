@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"time"
 )
 
 // MockClient is an in-memory implementation of Client for testing.
@@ -17,8 +18,9 @@ type MockClient struct {
 }
 
 type mockObject struct {
-	data []byte
-	meta ObjectMetadata
+	data         []byte
+	meta         ObjectMetadata
+	lastModified time.Time
 }
 
 // NewMockClient creates a new MockClient.
@@ -36,7 +38,7 @@ func (m *MockClient) key(bucket, key string) string {
 func (m *MockClient) PutObject(bucket, key string, data []byte, meta *ObjectMetadata) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	obj := mockObject{data: data}
+	obj := mockObject{data: data, lastModified: time.Now()}
 	if meta != nil {
 		obj.meta = *meta
 	}
@@ -135,8 +137,9 @@ func (m *MockClient) List(_ context.Context, bucket, prefix, delimiter string) (
 		}
 
 		entries = append(entries, ListEntry{
-			Key:  objKey,
-			Size: int64(len(obj.data)),
+			Key:          objKey,
+			Size:         int64(len(obj.data)),
+			LastModified: obj.lastModified,
 		})
 	}
 	return entries, nil

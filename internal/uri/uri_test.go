@@ -20,6 +20,11 @@ func TestParse(t *testing.T) {
 		{"gs://mybucket/file.txt", SchemeGCS, "mybucket", "file.txt", false, false},
 		{"az://container/blob.txt", SchemeAzure, "container", "blob.txt", false, false},
 		{"r2://mybucket/file.txt", SchemeR2, "mybucket", "file.txt", false, false},
+		// Bare scheme names (without ://)
+		{"s3", SchemeS3, "", "", true, false},
+		{"gs", SchemeGCS, "", "", true, false},
+		{"az", SchemeAzure, "", "", true, false},
+		{"r2", SchemeR2, "", "", true, false},
 		{"invalid", "", "", "", false, true},
 		{"http://example.com", "", "", "", false, true},
 		{"s3://", SchemeS3, "", "", true, false},
@@ -60,6 +65,7 @@ func TestIsBucketList(t *testing.T) {
 		want  bool
 	}{
 		{"s3://", true},
+		{"s3", true},
 		{"s3://mybucket", false},
 		{"s3://mybucket/key", false},
 	}

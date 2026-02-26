@@ -4,6 +4,7 @@ package storage
 import (
 	"context"
 	"io"
+	"time"
 )
 
 // ObjectMetadata holds standard and user-defined metadata for a storage object.
@@ -17,9 +18,10 @@ type ObjectMetadata struct {
 
 // ListEntry represents a single item in a storage listing.
 type ListEntry struct {
-	Key   string
-	IsDir bool
-	Size  int64
+	Key          string
+	IsDir        bool
+	Size         int64
+	LastModified time.Time
 }
 
 // Client defines the operations required for a cloud storage backend.

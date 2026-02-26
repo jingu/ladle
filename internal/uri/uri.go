@@ -40,12 +40,20 @@ func (u *URI) String() string {
 }
 
 // Parse parses a cloud storage URI like s3://bucket/key.
+// Also accepts bare scheme names (e.g. "s3") as shorthand for "s3://".
 func Parse(raw string) (*URI, error) {
-	idx := strings.Index(raw, "://")
-	if idx < 0 {
-		return nil, fmt.Errorf("invalid URI %q: missing scheme (expected s3://, gs://, az://, r2://)", raw)
+	// Accept bare scheme name (e.g. "s3" → "s3://")
+	if !strings.Contains(raw, "://") {
+		candidate := Scheme(raw)
+		switch candidate {
+		case SchemeS3, SchemeGCS, SchemeAzure, SchemeR2:
+			raw = raw + "://"
+		default:
+			return nil, fmt.Errorf("invalid URI %q: missing scheme (expected s3://, gs://, az://, r2://)", raw)
+		}
 	}
 
+	idx := strings.Index(raw, "://")
 	scheme := Scheme(raw[:idx])
 	switch scheme {
 	case SchemeS3, SchemeGCS, SchemeAzure, SchemeR2:

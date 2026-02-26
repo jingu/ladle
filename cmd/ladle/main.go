@@ -29,7 +29,7 @@ var version = "dev"
 
 func main() {
 	if err := newRootCmd().Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintf(os.Stderr, "\033[31mError: %s\033[0m\n", err)
 		os.Exit(1)
 	}
 }
@@ -125,6 +125,19 @@ func run(cmd *cobra.Command, args []string, f *flags) error {
 	// Directory => browser mode
 	if u.IsDirectory() {
 		return runBrowser(ctx, client, u, f)
+	}
+
+	// Check if the key is actually a directory prefix (e.g. "s3://bucket/dir" without trailing /)
+	if u.Key != "" {
+		entries, err := client.List(ctx, u.Bucket, u.Key+"/", "/")
+		if err == nil && len(entries) > 0 {
+			// It's a directory prefix — redirect to browser mode
+			dirURI, err := uri.Parse(fmt.Sprintf("%s://%s/%s/", u.Scheme, u.Bucket, u.Key))
+			if err != nil {
+				return err
+			}
+			return runBrowser(ctx, client, dirURI, f)
+		}
 	}
 
 	// File editing
@@ -323,29 +336,14 @@ func runMetaEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flag
 }
 
 func runBrowser(ctx context.Context, client storage.Client, u *uri.URI, f *flags) error {
-	b := browser.New(client, u, os.Stdin, os.Stderr)
-	for {
-		sel, err := b.Run(ctx)
-		if err != nil {
-			return err
+	b := browser.New(client, u, os.Stdin, os.Stderr, version)
+	editFn := func(selected *uri.URI) error {
+		if f.meta {
+			return runMetaEdit(ctx, client, selected, f)
 		}
-		if sel.Action == browser.ActionQuit {
-			return nil
-		}
-		if sel.Action == browser.ActionEdit {
-			if f.meta {
-				if err := runMetaEdit(ctx, client, sel.URI, f); err != nil {
-					b.SetFlash(fmt.Sprintf("Error: %v", apierror.Classify(err)))
-				}
-			} else {
-				if err := runFileEdit(ctx, client, sel.URI, f); err != nil {
-					b.SetFlash(fmt.Sprintf("Error: %v", apierror.Classify(err)))
-				}
-			}
-			// Return to browser after editing
-			continue
-		}
+		return runFileEdit(ctx, client, selected, f)
 	}
+	return b.Run(ctx, editFn)
 }
 
 const bucketCacheTTL = 5 * time.Minute

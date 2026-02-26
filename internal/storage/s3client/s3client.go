@@ -200,10 +200,14 @@ func (c *S3Client) List(ctx context.Context, bucket, prefix, delimiter string) (
 				if obj.Size != nil {
 					size = *obj.Size
 				}
-				entries = append(entries, storage.ListEntry{
+				e := storage.ListEntry{
 					Key:  *obj.Key,
 					Size: size,
-				})
+				}
+				if obj.LastModified != nil {
+					e.LastModified = *obj.LastModified
+				}
+				entries = append(entries, e)
 			}
 		}
 	}
