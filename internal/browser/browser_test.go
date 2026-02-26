@@ -3,6 +3,7 @@ package browser
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"reflect"
 	"strings"
@@ -50,6 +51,8 @@ func newTestBrowser(client storage.Client, bucket, prefix string, bucketListEnab
 		bucketListEnabled: bucketListEnabled,
 		in:                newKeyReader(input),
 		out:               out,
+		expanded:          make(map[string]bool),
+		childCache:        make(map[string][]storage.ListEntry),
 	}, out
 }
 
@@ -59,7 +62,7 @@ func TestBuildItems(t *testing.T) {
 		{Key: "file.txt", Size: 100},
 	}
 
-	b := &Browser{prefix: "", bucketListEnabled: false}
+	b := &Browser{prefix: "", bucketListEnabled: false, expanded: make(map[string]bool)}
 	items := b.buildItems(entries)
 
 	// 2 entries + quit (no ".." since prefix is empty and bucketListEnabled is false)
@@ -83,7 +86,7 @@ func TestBuildItemsWithPrefix(t *testing.T) {
 		{Key: "dir/file.txt", Size: 50},
 	}
 
-	b := &Browser{prefix: "dir/", bucketListEnabled: false}
+	b := &Browser{prefix: "dir/", bucketListEnabled: false, expanded: make(map[string]bool)}
 	items := b.buildItems(entries)
 
 	// 2 entries + ".." + quit
@@ -106,7 +109,7 @@ func TestBuildItemsWithBucketListEnabled(t *testing.T) {
 		{Key: "file.txt", Size: 100},
 	}
 
-	b := &Browser{prefix: "", bucketListEnabled: true}
+	b := &Browser{prefix: "", bucketListEnabled: true, expanded: make(map[string]bool)}
 	items := b.buildItems(entries)
 
 	// 1 entry + ".." + quit
@@ -124,7 +127,7 @@ func TestBuildItemsSkipsEmptyLabel(t *testing.T) {
 		{Key: "dir/file.txt", Size: 50},
 	}
 
-	b := &Browser{prefix: "dir/", bucketListEnabled: false}
+	b := &Browser{prefix: "dir/", bucketListEnabled: false, expanded: make(map[string]bool)}
 	items := b.buildItems(entries)
 
 	// "dir/" stripped to "" is skipped, so: file.txt + ".." + quit
@@ -143,7 +146,7 @@ func TestHandleInputEnterSelectsFirst(t *testing.T) {
 	}
 
 	b, _ := newTestBrowser(nil, "b", "", false, "\r") // Enter
-	idx, quit := b.handleInput(items, 0)
+	idx, quit, _ := b.handleInput(context.Background(), items, 0)
 	if quit {
 		t.Fatal("expected no quit")
 	}
@@ -160,7 +163,7 @@ func TestHandleInputNavigateDownAndSelect(t *testing.T) {
 	}
 
 	b, _ := newTestBrowser(nil, "b", "", false, "j\r") // j(down) + Enter
-	idx, quit := b.handleInput(items, 0)
+	idx, quit, _ := b.handleInput(context.Background(), items, 0)
 	if quit {
 		t.Fatal("expected no quit")
 	}
@@ -177,7 +180,7 @@ func TestHandleInputNavigateUpAndSelect(t *testing.T) {
 	}
 
 	b, _ := newTestBrowser(nil, "b", "", false, "k\r") // k(up, clamped at 0) + Enter
-	idx, quit := b.handleInput(items, 1)
+	idx, quit, _ := b.handleInput(context.Background(), items, 1)
 	if quit {
 		t.Fatal("expected no quit")
 	}
@@ -195,7 +198,7 @@ func TestHandleInputArrowKeys(t *testing.T) {
 
 	// Down arrow (\x1b[B) then Enter
 	b, _ := newTestBrowser(nil, "b", "", false, "\x1b[B\r")
-	idx, quit := b.handleInput(items, 0)
+	idx, quit, _ := b.handleInput(context.Background(), items, 0)
 	if quit {
 		t.Fatal("expected no quit")
 	}
@@ -211,7 +214,7 @@ func TestHandleInputQuitWithQ(t *testing.T) {
 	}
 
 	b, _ := newTestBrowser(nil, "b", "", false, "q")
-	_, quit := b.handleInput(items, 0)
+	_, quit, _ := b.handleInput(context.Background(), items, 0)
 	if !quit {
 		t.Fatal("expected quit")
 	}
@@ -224,7 +227,7 @@ func TestHandleInputQuitWithCtrlC(t *testing.T) {
 	}
 
 	b, _ := newTestBrowser(nil, "b", "", false, "\x03") // Ctrl+C
-	_, quit := b.handleInput(items, 0)
+	_, quit, _ := b.handleInput(context.Background(), items, 0)
 	if !quit {
 		t.Fatal("expected quit")
 	}
@@ -239,7 +242,7 @@ func TestHandleInputFilterAndSelect(t *testing.T) {
 
 	// "/" enters filter, "beta" filters, Enter exits filter, Enter selects
 	b, _ := newTestBrowser(nil, "b", "", false, "/beta\r\r")
-	idx, quit := b.handleInput(items, 0)
+	idx, quit, _ := b.handleInput(context.Background(), items, 0)
 	if quit {
 		t.Fatal("expected no quit")
 	}
@@ -258,7 +261,7 @@ func TestHandleInputFilterEscapeClearsFilter(t *testing.T) {
 
 	// "/" enters filter, "x" filters (no match except nav), Escape clears, Enter selects first
 	b, _ := newTestBrowser(nil, "b", "", false, "/x\x1b\r")
-	idx, quit := b.handleInput(items, 0)
+	idx, quit, _ := b.handleInput(context.Background(), items, 0)
 	if quit {
 		t.Fatal("expected no quit")
 	}
@@ -278,7 +281,7 @@ func TestHandleInputFilterBackspace(t *testing.T) {
 	// "/" enters filter, "bx" types, backspace deletes "x", leaving "b" → matches beta.go
 	// Enter exits filter, Enter selects
 	b, _ := newTestBrowser(nil, "b", "", false, "/bx\x7f\r\r")
-	idx, quit := b.handleInput(items, 0)
+	idx, quit, _ := b.handleInput(context.Background(), items, 0)
 	if quit {
 		t.Fatal("expected no quit")
 	}
@@ -295,7 +298,7 @@ func TestHandleInputEOFQuitsGracefully(t *testing.T) {
 	}
 
 	b, _ := newTestBrowser(nil, "b", "", false, "") // empty input → EOF
-	_, quit := b.handleInput(items, 0)
+	_, quit, _ := b.handleInput(context.Background(), items, 0)
 	if !quit {
 		t.Fatal("expected quit on EOF")
 	}
@@ -309,7 +312,7 @@ func TestHandleInputCursorClampedAtBounds(t *testing.T) {
 
 	// Try to go up (k) when already at 0, then down (j) past end, then select
 	b, _ := newTestBrowser(nil, "b", "", false, "kkjjj\r")
-	idx, quit := b.handleInput(items, 0)
+	idx, quit, _ := b.handleInput(context.Background(), items, 0)
 	if quit {
 		t.Fatal("expected no quit")
 	}
@@ -326,7 +329,8 @@ func TestRenderFilteredShowsHeader(t *testing.T) {
 	}
 
 	b, out := newTestBrowser(nil, "mybucket", "path/", false, "")
-	b.renderFiltered(items, allIndices(len(items)), 0, "", false)
+	off := 0
+	b.renderFiltered(items, allIndices(len(items)), 0, "", false, &off)
 
 	output := out.String()
 	if !strings.Contains(output, "mybucket") {
@@ -347,7 +351,8 @@ func TestRenderFilteredBucketListHeader(t *testing.T) {
 	}
 
 	b, out := newTestBrowser(nil, "", "", true, "")
-	b.renderFiltered(items, allIndices(len(items)), 0, "", false)
+	off := 0
+	b.renderFiltered(items, allIndices(len(items)), 0, "", false, &off)
 
 	output := out.String()
 	if !strings.Contains(output, "s3://") {
@@ -361,7 +366,8 @@ func TestRenderFilteredEmptyDir(t *testing.T) {
 	}
 
 	b, out := newTestBrowser(nil, "b", "", false, "")
-	b.renderFiltered(items, allIndices(len(items)), 0, "", false)
+	off := 0
+	b.renderFiltered(items, allIndices(len(items)), 0, "", false, &off)
 
 	if !strings.Contains(out.String(), "(empty)") {
 		t.Error("expected (empty) indicator")
@@ -377,7 +383,8 @@ func TestRenderFilteredNoMatches(t *testing.T) {
 	// Only nav items visible (simulating filter with no content matches)
 	visible := []int{1} // only quit
 	b, out := newTestBrowser(nil, "b", "", false, "")
-	b.renderFiltered(items, visible, 0, "zzz", false)
+	off := 0
+	b.renderFiltered(items, visible, 0, "zzz", false, &off)
 
 	if !strings.Contains(out.String(), "(no matches)") {
 		t.Error("expected (no matches) indicator")
@@ -391,7 +398,8 @@ func TestRenderFilteredShowsFilterBar(t *testing.T) {
 	}
 
 	b, out := newTestBrowser(nil, "b", "", false, "")
-	b.renderFiltered(items, allIndices(len(items)), 0, "test", true)
+	off := 0
+	b.renderFiltered(items, allIndices(len(items)), 0, "test", true, &off)
 
 	output := out.String()
 	if !strings.Contains(output, "test") {
@@ -570,5 +578,365 @@ func TestFormatSize(t *testing.T) {
 				t.Errorf("formatSize(%d): got %q, want %q", tt.size, got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestBuildTreeItems(t *testing.T) {
+	topEntries := []storage.ListEntry{
+		{Key: "image/", IsDir: true},
+		{Key: "prod/", IsDir: true},
+		{Key: "readme.txt", Size: 100},
+	}
+	childEntries := []storage.ListEntry{
+		{Key: "image/thumbnails/", IsDir: true},
+		{Key: "image/logo.png", Size: 12800},
+	}
+
+	b := &Browser{
+		prefix:     "",
+		expanded:   map[string]bool{"image/": true},
+		childCache: map[string][]storage.ListEntry{"image/": childEntries},
+	}
+	items := b.buildItems(topEntries)
+
+	// Expected: image/(depth=0), thumbnails/(depth=1), logo.png(depth=1), prod/(depth=0), readme.txt(depth=0), quit
+	if len(items) != 6 {
+		t.Fatalf("expected 6 items, got %d", len(items))
+	}
+	if items[0].label != "image/" || items[0].depth != 0 {
+		t.Errorf("item[0]: got %+v", items[0])
+	}
+	if items[1].label != "thumbnails/" || items[1].depth != 1 {
+		t.Errorf("item[1]: got %+v", items[1])
+	}
+	if items[2].label != "logo.png" || items[2].depth != 1 {
+		t.Errorf("item[2]: got %+v", items[2])
+	}
+	if items[3].label != "prod/" || items[3].depth != 0 {
+		t.Errorf("item[3]: got %+v", items[3])
+	}
+	if items[4].label != "readme.txt" || items[4].depth != 0 {
+		t.Errorf("item[4]: got %+v", items[4])
+	}
+	if !items[5].isNav || items[5].navID != "quit" {
+		t.Errorf("item[5]: expected quit nav, got %+v", items[5])
+	}
+}
+
+func TestBuildTreeItemsNested(t *testing.T) {
+	topEntries := []storage.ListEntry{
+		{Key: "a/", IsDir: true},
+	}
+	childA := []storage.ListEntry{
+		{Key: "a/b/", IsDir: true},
+	}
+	childB := []storage.ListEntry{
+		{Key: "a/b/file.txt", Size: 50},
+	}
+
+	b := &Browser{
+		prefix:   "",
+		expanded: map[string]bool{"a/": true, "a/b/": true},
+		childCache: map[string][]storage.ListEntry{
+			"a/":   childA,
+			"a/b/": childB,
+		},
+	}
+	items := b.buildItems(topEntries)
+
+	// a/(0), b/(1), file.txt(2), quit
+	if len(items) != 4 {
+		t.Fatalf("expected 4 items, got %d", len(items))
+	}
+	if items[0].depth != 0 || items[0].label != "a/" {
+		t.Errorf("item[0]: got %+v", items[0])
+	}
+	if items[1].depth != 1 || items[1].label != "b/" {
+		t.Errorf("item[1]: got %+v", items[1])
+	}
+	if items[2].depth != 2 || items[2].label != "file.txt" {
+		t.Errorf("item[2]: got %+v", items[2])
+	}
+}
+
+func TestHandleInputExpandDir(t *testing.T) {
+	mock := storage.NewMockClient()
+	mock.PutObject("mybucket", "dir/file.txt", []byte("hello"), nil)
+
+	// Right arrow (\x1b[C) on dir/ expands it, then Enter selects dir/
+	b, _ := newTestBrowser(mock, "mybucket", "", false, "\x1b[C\r")
+
+	entries := []storage.ListEntry{
+		{Key: "dir/", IsDir: true},
+		{Key: "readme.txt", Size: 100},
+	}
+	items := b.buildItems(entries)
+	idx, quit, _ := b.handleInput(context.Background(), items, 0)
+	if quit {
+		t.Fatal("expected no quit")
+	}
+	// After expand, items are rebuilt. dir/ is still at index 0.
+	if idx != 0 {
+		t.Errorf("expected idx 0, got %d", idx)
+	}
+	if !b.expanded["dir/"] {
+		t.Error("expected dir/ to be expanded")
+	}
+	if _, ok := b.childCache["dir/"]; !ok {
+		t.Error("expected dir/ children to be cached")
+	}
+}
+
+func TestHandleInputCollapseDir(t *testing.T) {
+	mock := storage.NewMockClient()
+	mock.PutObject("mybucket", "dir/file.txt", []byte("hello"), nil)
+
+	// Left arrow (\x1b[D) on expanded dir/ collapses it, then Enter
+	b, _ := newTestBrowser(mock, "mybucket", "", false, "\x1b[D\r")
+	b.expanded["dir/"] = true
+	b.childCache["dir/"] = []storage.ListEntry{
+		{Key: "dir/file.txt", Size: 5},
+	}
+
+	entries := []storage.ListEntry{
+		{Key: "dir/", IsDir: true},
+		{Key: "readme.txt", Size: 100},
+	}
+	items := b.buildItems(entries)
+	_, quit, _ := b.handleInput(context.Background(), items, 0)
+	if quit {
+		t.Fatal("expected no quit")
+	}
+	if b.expanded["dir/"] {
+		t.Error("expected dir/ to be collapsed")
+	}
+}
+
+func TestHandleInputLeftArrowOnChild(t *testing.T) {
+	mock := storage.NewMockClient()
+	mock.PutObject("mybucket", "dir/file.txt", []byte("hello"), nil)
+
+	// Cursor starts at index 1 (child item at depth 1).
+	// Left arrow should move cursor to parent (index 0), then Enter selects.
+	b, _ := newTestBrowser(mock, "mybucket", "", false, "\x1b[D\r")
+	b.expanded["dir/"] = true
+	b.childCache["dir/"] = []storage.ListEntry{
+		{Key: "dir/file.txt", Size: 5},
+	}
+
+	entries := []storage.ListEntry{
+		{Key: "dir/", IsDir: true},
+	}
+	items := b.buildItems(entries)
+	// items: dir/(depth=0), file.txt(depth=1), quit
+	if len(items) < 2 {
+		t.Fatalf("expected at least 2 items, got %d", len(items))
+	}
+
+	idx, quit, _ := b.handleInput(context.Background(), items, 1)
+	if quit {
+		t.Fatal("expected no quit")
+	}
+	// Left arrow on child (depth=1) should move to parent dir/(index 0)
+	if idx != 0 {
+		t.Errorf("expected idx 0 (parent), got %d", idx)
+	}
+}
+
+func TestHandleInputEmacsCtrlN(t *testing.T) {
+	items := []item{
+		{label: "first.txt"},
+		{label: "second.txt"},
+		{label: "quit", isNav: true, navID: "quit"},
+	}
+
+	// Ctrl+N (0x0e) = down, then Enter
+	b, _ := newTestBrowser(nil, "b", "", false, "\x0e\r")
+	idx, quit, _ := b.handleInput(context.Background(), items, 0)
+	if quit {
+		t.Fatal("expected no quit")
+	}
+	if idx != 1 {
+		t.Errorf("expected idx 1, got %d", idx)
+	}
+}
+
+func TestHandleInputEmacsCtrlP(t *testing.T) {
+	items := []item{
+		{label: "first.txt"},
+		{label: "second.txt"},
+		{label: "quit", isNav: true, navID: "quit"},
+	}
+
+	// Ctrl+P (0x10) = up, then Enter
+	b, _ := newTestBrowser(nil, "b", "", false, "\x10\r")
+	idx, quit, _ := b.handleInput(context.Background(), items, 1)
+	if quit {
+		t.Fatal("expected no quit")
+	}
+	if idx != 0 {
+		t.Errorf("expected idx 0, got %d", idx)
+	}
+}
+
+func TestHandleInputEmacsCtrlFExpand(t *testing.T) {
+	mock := storage.NewMockClient()
+	mock.PutObject("mybucket", "dir/file.txt", []byte("hello"), nil)
+
+	// Ctrl+F (0x06) on dir/ expands it, then Enter
+	b, _ := newTestBrowser(mock, "mybucket", "", false, "\x06\r")
+	entries := []storage.ListEntry{
+		{Key: "dir/", IsDir: true},
+		{Key: "readme.txt", Size: 100},
+	}
+	items := b.buildItems(entries)
+	idx, quit, _ := b.handleInput(context.Background(), items, 0)
+	if quit {
+		t.Fatal("expected no quit")
+	}
+	if idx != 0 {
+		t.Errorf("expected idx 0, got %d", idx)
+	}
+	if !b.expanded["dir/"] {
+		t.Error("expected dir/ to be expanded")
+	}
+}
+
+func TestHandleInputEmacsCtrlBCollapse(t *testing.T) {
+	mock := storage.NewMockClient()
+	mock.PutObject("mybucket", "dir/file.txt", []byte("hello"), nil)
+
+	// Ctrl+B (0x02) on expanded dir/ collapses it, then Enter
+	b, _ := newTestBrowser(mock, "mybucket", "", false, "\x02\r")
+	b.expanded["dir/"] = true
+	b.childCache["dir/"] = []storage.ListEntry{
+		{Key: "dir/file.txt", Size: 5},
+	}
+	entries := []storage.ListEntry{
+		{Key: "dir/", IsDir: true},
+		{Key: "readme.txt", Size: 100},
+	}
+	items := b.buildItems(entries)
+	_, quit, _ := b.handleInput(context.Background(), items, 0)
+	if quit {
+		t.Fatal("expected no quit")
+	}
+	if b.expanded["dir/"] {
+		t.Error("expected dir/ to be collapsed")
+	}
+}
+
+func TestComputeTreePrefixes(t *testing.T) {
+	// Simulates:
+	//   ├── ▶ dev/
+	//   ├── ▼ image/
+	//   │   ├── ▶ thumbnails/
+	//   │   └── logo.png
+	//   ├── ▶ prod/
+	//   └── ▶ stage/
+	//   ..
+	//   quit
+	items := []item{
+		{label: "dev/", isDir: true, depth: 0},
+		{label: "image/", isDir: true, depth: 0},
+		{label: "thumbnails/", isDir: true, depth: 1},
+		{label: "logo.png", depth: 1},
+		{label: "prod/", isDir: true, depth: 0},
+		{label: "stage/", isDir: true, depth: 0},
+		{label: "..", isNav: true, navID: "up"},
+		{label: "quit", isNav: true, navID: "quit"},
+	}
+	visible := allIndices(len(items))
+	prefixes := computeTreePrefixes(items, visible)
+
+	want := []string{
+		"├── ",           // dev/
+		"├── ",           // image/
+		"│   ├── ",       // thumbnails/
+		"│   └── ",       // logo.png
+		"├── ",           // prod/
+		"└── ",           // stage/
+		"",               // ..
+		"",               // quit
+	}
+
+	if len(prefixes) != len(want) {
+		t.Fatalf("expected %d prefixes, got %d", len(want), len(prefixes))
+	}
+	for i, w := range want {
+		if prefixes[i] != w {
+			t.Errorf("prefix[%d] (%s): got %q, want %q", i, items[i].label, prefixes[i], w)
+		}
+	}
+}
+
+func TestScrollViewport(t *testing.T) {
+	// 10 files + quit = 11 items, terminal height = 10
+	// overhead = header(2) + blank(1) + help(2) = 5, so maxRows = 5
+	var items []item
+	for i := 0; i < 10; i++ {
+		items = append(items, item{label: fmt.Sprintf("file%d.txt", i)})
+	}
+	items = append(items, item{label: "quit", isNav: true, navID: "quit"})
+
+	b, out := newTestBrowser(nil, "b", "", false, "")
+	b.heightOverride = 10
+
+	// Cursor at 0, scrollOffset starts at 0
+	off := 0
+	b.renderFiltered(items, allIndices(len(items)), 0, "", false, &off)
+	output := out.String()
+
+	// Should show "more below" indicator
+	if !strings.Contains(output, "more below") {
+		t.Error("expected 'more below' indicator")
+	}
+	// file0.txt should be visible
+	if !strings.Contains(output, "file0.txt") {
+		t.Error("expected file0.txt to be visible")
+	}
+
+	// Cursor at 8 (near bottom), should scroll
+	out.Reset()
+	off = 0
+	b.renderFiltered(items, allIndices(len(items)), 8, "", false, &off)
+	output = out.String()
+
+	// Should show "more above" indicator
+	if !strings.Contains(output, "more above") {
+		t.Error("expected 'more above' indicator")
+	}
+	// file8.txt should be visible
+	if !strings.Contains(output, "file8.txt") {
+		t.Error("expected file8.txt to be visible")
+	}
+}
+
+func TestComputeTreePrefixesNested(t *testing.T) {
+	// Simulates:
+	//   └── ▼ a/
+	//       └── ▼ b/
+	//           └── file.txt
+	//   quit
+	items := []item{
+		{label: "a/", isDir: true, depth: 0},
+		{label: "b/", isDir: true, depth: 1},
+		{label: "file.txt", depth: 2},
+		{label: "quit", isNav: true, navID: "quit"},
+	}
+	visible := allIndices(len(items))
+	prefixes := computeTreePrefixes(items, visible)
+
+	want := []string{
+		"└── ",           // a/
+		"    └── ",       // b/
+		"        └── ",   // file.txt
+		"",               // quit
+	}
+
+	for i, w := range want {
+		if prefixes[i] != w {
+			t.Errorf("prefix[%d] (%s): got %q, want %q", i, items[i].label, prefixes[i], w)
+		}
 	}
 }
