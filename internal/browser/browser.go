@@ -29,23 +29,25 @@ type Selection struct {
 
 // Browser provides an interactive file browser.
 type Browser struct {
-	client storage.Client
-	scheme uri.Scheme
-	bucket string
-	prefix string
-	in     io.Reader
-	out    io.Writer
+	client            storage.Client
+	scheme            uri.Scheme
+	bucket            string
+	prefix            string
+	bucketListEnabled bool
+	in                io.Reader
+	out               io.Writer
 }
 
 // New creates a new Browser.
 func New(client storage.Client, u *uri.URI, in io.Reader, out io.Writer) *Browser {
 	return &Browser{
-		client: client,
-		scheme: u.Scheme,
-		bucket: u.Bucket,
-		prefix: u.Key,
-		in:     in,
-		out:    out,
+		client:            client,
+		scheme:            u.Scheme,
+		bucket:            u.Bucket,
+		prefix:            u.Key,
+		bucketListEnabled: u.IsBucketList(),
+		in:                in,
+		out:               out,
 	}
 }
 
@@ -53,6 +55,18 @@ func New(client storage.Client, u *uri.URI, in io.Reader, out io.Writer) *Browse
 // selected for editing, or nil if the user quit.
 func (b *Browser) Run(ctx context.Context) (*Selection, error) {
 	for {
+		// Bucket list mode
+		if b.bucket == "" {
+			sel, done, err := b.runBucketList(ctx)
+			if err != nil {
+				return nil, err
+			}
+			if done {
+				return sel, nil
+			}
+			continue
+		}
+
 		entries, err := b.client.List(ctx, b.bucket, b.prefix, "/")
 		if err != nil {
 			return nil, fmt.Errorf("listing objects: %w", err)
@@ -79,7 +93,7 @@ func (b *Browser) Run(ctx context.Context) (*Selection, error) {
 		fmt.Fprintf(b.out, "\n")
 
 		// Show navigation options
-		if b.prefix != "" {
+		if b.prefix != "" || b.bucketListEnabled {
 			fmt.Fprintf(b.out, "  [..] Go up\n")
 		}
 		fmt.Fprintf(b.out, "  [q]  Quit\n\n")
@@ -125,6 +139,10 @@ func (b *Browser) Run(ctx context.Context) (*Selection, error) {
 }
 
 func (b *Browser) printHeader() {
+	if b.bucket == "" {
+		fmt.Fprintf(b.out, "\n%s://\n\n", b.scheme)
+		return
+	}
 	p := b.prefix
 	if p == "" {
 		p = "/"
@@ -134,6 +152,9 @@ func (b *Browser) printHeader() {
 
 func (b *Browser) goUp() {
 	if b.prefix == "" {
+		if b.bucketListEnabled {
+			b.bucket = ""
+		}
 		return
 	}
 	// Remove trailing slash
@@ -145,6 +166,46 @@ func (b *Browser) goUp() {
 	} else {
 		b.prefix = parent + "/"
 	}
+}
+
+// runBucketList displays a list of buckets for the user to select.
+// Returns (selection, done, error). done=true means the caller should return.
+func (b *Browser) runBucketList(ctx context.Context) (*Selection, bool, error) {
+	buckets, err := b.client.ListBuckets(ctx)
+	if err != nil {
+		return nil, true, fmt.Errorf("listing buckets: %w", err)
+	}
+
+	b.printHeader()
+	if len(buckets) == 0 {
+		fmt.Fprintf(b.out, "  (no buckets)\n")
+	}
+	for i, name := range buckets {
+		fmt.Fprintf(b.out, "  [%d] %s\n", i+1, name)
+	}
+	fmt.Fprintf(b.out, "\n")
+	fmt.Fprintf(b.out, "  [q]  Quit\n\n")
+	fmt.Fprintf(b.out, "Select: ")
+
+	var input string
+	if _, err := fmt.Fscan(b.in, &input); err != nil {
+		return &Selection{Action: ActionQuit}, true, nil
+	}
+	input = strings.TrimSpace(input)
+
+	if input == "q" || input == "Q" {
+		return &Selection{Action: ActionQuit}, true, nil
+	}
+
+	var idx int
+	if _, err := fmt.Sscanf(input, "%d", &idx); err != nil || idx < 1 || idx > len(buckets) {
+		fmt.Fprintf(b.out, "Invalid selection.\n\n")
+		return nil, false, nil
+	}
+
+	b.bucket = buckets[idx-1]
+	b.prefix = ""
+	return nil, false, nil
 }
 
 func formatSize(size int64) string {
