@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/jingu/ladle/internal/browser"
 	"github.com/jingu/ladle/internal/completion"
@@ -59,7 +60,8 @@ Examples:
   ladle s3://bucket/path/to/file.html
   ladle --meta s3://bucket/path/to/file.html
   ladle --profile production s3://bucket/path/to/file.html
-  ladle s3://bucket/path/to/              # file browser mode`,
+  ladle s3://bucket/path/to/              # file browser mode
+  ladle s3://                             # bucket list browser`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.MaximumNArgs(1),
@@ -111,7 +113,7 @@ func run(cmd *cobra.Command, args []string, f *flags) error {
 
 	// Handle internal completion helpers
 	if f.completeBucket {
-		return handleCompleteBucket(ctx, client, u)
+		return handleCompleteBucket(ctx, client, u, f.profile)
 	}
 	if f.completePath {
 		return handleCompletePath(ctx, client, u)
@@ -333,10 +335,16 @@ func runBrowser(ctx context.Context, client storage.Client, u *uri.URI, f *flags
 	}
 }
 
-func handleCompleteBucket(ctx context.Context, client storage.Client, u *uri.URI) error {
-	buckets, err := client.ListBuckets(ctx)
+const bucketCacheTTL = 5 * time.Minute
+
+func handleCompleteBucket(ctx context.Context, client storage.Client, u *uri.URI, profile string) error {
+	buckets, err := loadBucketCache(profile)
 	if err != nil {
-		return nil // Silently fail for completions
+		buckets, err = client.ListBuckets(ctx)
+		if err != nil {
+			return nil // Silently fail for completions
+		}
+		_ = saveBucketCache(profile, buckets)
 	}
 	for _, b := range buckets {
 		if strings.HasPrefix(b, u.Bucket) {
@@ -344,6 +352,41 @@ func handleCompleteBucket(ctx context.Context, client storage.Client, u *uri.URI
 		}
 	}
 	return nil
+}
+
+func bucketCachePath(profile string) string {
+	if profile == "" {
+		profile = "default"
+	}
+	return filepath.Join(os.Getenv("HOME"), ".cache", "ladle", "buckets_"+profile+".cache")
+}
+
+func loadBucketCache(profile string) ([]string, error) {
+	p := bucketCachePath(profile)
+	info, err := os.Stat(p)
+	if err != nil {
+		return nil, err
+	}
+	if time.Since(info.ModTime()) > bucketCacheTTL {
+		return nil, fmt.Errorf("cache expired")
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return nil, err
+	}
+	content := strings.TrimSpace(string(data))
+	if content == "" {
+		return nil, nil
+	}
+	return strings.Split(content, "\n"), nil
+}
+
+func saveBucketCache(profile string, buckets []string) error {
+	p := bucketCachePath(profile)
+	if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
+		return err
+	}
+	return os.WriteFile(p, []byte(strings.Join(buckets, "\n")+"\n"), 0600)
 }
 
 func handleCompletePath(ctx context.Context, client storage.Client, u *uri.URI) error {
