@@ -17,6 +17,13 @@ import (
 // It receives the parsed URI and should perform the edit workflow.
 type EditFunc func(u *uri.URI) error
 
+// EditMetaFunc is called to edit object metadata.
+type EditMetaFunc func(u *uri.URI) error
+
+// DownloadFunc is called to download a file to a local directory.
+// It receives the parsed URI and a local directory path.
+type DownloadFunc func(u *uri.URI, dir string) error
+
 // Browser provides an interactive file browser.
 type Browser struct {
 	client            storage.Client
@@ -43,25 +50,50 @@ func New(client storage.Client, u *uri.URI, in io.Reader, out io.Writer, version
 	}
 }
 
+// RunOption configures optional callbacks for the browser.
+type RunOption func(*runOptions)
+
+type runOptions struct {
+	editMetaFn EditMetaFunc
+	downloadFn DownloadFunc
+}
+
+// WithEditMeta sets the callback for editing metadata.
+func WithEditMeta(fn EditMetaFunc) RunOption {
+	return func(o *runOptions) { o.editMetaFn = fn }
+}
+
+// WithDownload sets the callback for downloading files.
+func WithDownload(fn DownloadFunc) RunOption {
+	return func(o *runOptions) { o.downloadFn = fn }
+}
+
 // Run starts the interactive browser. It runs a single TUI program.
 // editFn is called (with TUI suspended) when a file is selected.
-func (b *Browser) Run(ctx context.Context, editFn EditFunc) error {
+func (b *Browser) Run(ctx context.Context, editFn EditFunc, opts ...RunOption) error {
 	nodes, header, canGoUp, err := b.buildView(ctx)
 	if err != nil {
 		return err
 	}
 
+	var ro runOptions
+	for _, o := range opts {
+		o(&ro)
+	}
+
 	m := model{
-		nodes:   nodes,
-		header:  header,
-		version: b.version,
-		canGoUp: canGoUp,
-		client:  b.client,
-		ctx:     ctx,
-		bucket:  b.bucket,
-		scheme:  string(b.scheme),
-		browser: b,
-		editFn:  editFn,
+		nodes:      nodes,
+		header:     header,
+		version:    b.version,
+		canGoUp:    canGoUp,
+		client:     b.client,
+		ctx:        ctx,
+		bucket:     b.bucket,
+		scheme:     string(b.scheme),
+		browser:    b,
+		editFn:     editFn,
+		editMetaFn: ro.editMetaFn,
+		downloadFn: ro.downloadFn,
 	}
 
 	p := tea.NewProgram(m, tea.WithInput(b.in), tea.WithOutput(b.out))

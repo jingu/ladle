@@ -44,6 +44,36 @@ type editDoneMsg struct {
 	err error
 }
 
+// menuAction represents a context menu item.
+type menuAction int
+
+const (
+	menuEdit menuAction = iota
+	menuEditMeta
+	menuDownload
+	menuDelete
+	menuCopy
+	menuMove
+)
+
+var menuItems = []struct {
+	action menuAction
+	label  string
+}{
+	{menuEdit, "Edit"},
+	{menuEditMeta, "Edit metadata"},
+	{menuDownload, "Download to..."},
+	{menuCopy, "Copy to..."},
+	{menuMove, "Move to..."},
+	{menuDelete, "Delete"},
+}
+
+// actionDoneMsg is sent after an async action (delete, copy, move) completes.
+type actionDoneMsg struct {
+	message string
+	err     error
+}
+
 // navigatedMsg is sent after navigation (goUp / bucket select) rebuilds the view.
 type navigatedMsg struct {
 	nodes   []*node
@@ -89,16 +119,29 @@ type model struct {
 	filtering  bool
 	filterText string
 
+	// Context menu state
+	menuOpen   bool
+	menuCursor int
+	menuTarget *node // the file node the menu was opened for
+
+	// Text input state (for download dir, copy/move destination)
+	inputMode   bool
+	inputPrompt string
+	inputText   string
+	inputAction menuAction
+
 	quitting     bool
 	loading      bool
 	spinnerFrame int
 
-	client  storage.Client
-	ctx     context.Context // stored because bubbletea Cmd closures need it
-	bucket  string
-	scheme  string
-	browser *Browser
-	editFn  EditFunc
+	client     storage.Client
+	ctx        context.Context // stored because bubbletea Cmd closures need it
+	bucket     string
+	scheme     string
+	browser    *Browser
+	editFn     EditFunc
+	editMetaFn EditMetaFunc
+	downloadFn DownloadFunc
 }
 
 func (m model) Init() tea.Cmd {
@@ -127,6 +170,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg { return tickMsg{} })
 		}
 		return m, nil
+	case actionDoneMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.message = apierror.Classify(msg.err).Error()
+		} else {
+			m.message = msg.message
+		}
+		return m, nil
 	case navigatedMsg:
 		m.loading = false
 		if msg.err != nil {
@@ -146,6 +197,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Input mode handling (download dir, copy/move destination)
+	if m.inputMode {
+		return m.handleInputKey(msg)
+	}
+
+	// Context menu handling
+	if m.menuOpen {
+		return m.handleMenuKey(msg)
+	}
+
 	// Filter mode handling
 	if m.filtering {
 		return m.handleFilterKey(msg)
@@ -224,6 +285,11 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if !n.expanded {
 					n.expanded = true
 				}
+			} else if n != nil && !n.entry.isDir && !n.entry.isBucket {
+				// Open context menu for files
+				m.menuOpen = true
+				m.menuCursor = 0
+				m.menuTarget = n
 			}
 		}
 	case "left", "h", "ctrl+b":
@@ -317,6 +383,280 @@ func (m model) handleFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	return m, nil
 }
+
+func (m model) handleMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEscape, tea.KeyLeft:
+		m.menuOpen = false
+		m.menuTarget = nil
+		return m, nil
+	case tea.KeyUp:
+		if m.menuCursor > 0 {
+			m.menuCursor--
+		}
+		return m, nil
+	case tea.KeyDown:
+		if m.menuCursor < len(menuItems)-1 {
+			m.menuCursor++
+		}
+		return m, nil
+	case tea.KeyEnter:
+		return m.executeMenuAction(menuItems[m.menuCursor].action)
+	case tea.KeyCtrlC:
+		m.quitting = true
+		return m, tea.Quit
+	}
+
+	switch msg.String() {
+	case "k", "ctrl+p":
+		if m.menuCursor > 0 {
+			m.menuCursor--
+		}
+	case "j", "ctrl+n":
+		if m.menuCursor < len(menuItems)-1 {
+			m.menuCursor++
+		}
+	}
+	return m, nil
+}
+
+func (m model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEscape:
+		m.inputMode = false
+		m.inputText = ""
+		return m, nil
+	case tea.KeyEnter:
+		m.inputMode = false
+		text := m.inputText
+		m.inputText = ""
+		return m.executeInput(m.inputAction, text)
+	case tea.KeyBackspace:
+		if len(m.inputText) > 0 {
+			m.inputText = m.inputText[:len(m.inputText)-1]
+		}
+		return m, nil
+	case tea.KeyCtrlC:
+		m.quitting = true
+		return m, tea.Quit
+	case tea.KeyRunes:
+		m.inputText += string(msg.Runes)
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m model) executeMenuAction(action menuAction) (tea.Model, tea.Cmd) {
+	m.menuOpen = false
+	target := m.menuTarget
+	m.menuTarget = nil
+
+	if target == nil {
+		return m, nil
+	}
+
+	switch action {
+	case menuEdit:
+		cmd, err := m.execEdit(target.entry.key)
+		if err != nil {
+			m.message = apierror.Classify(err).Error()
+			return m, nil
+		}
+		return m, cmd
+
+	case menuEditMeta:
+		cmd, err := m.execEditMeta(target.entry.key)
+		if err != nil {
+			m.message = apierror.Classify(err).Error()
+			return m, nil
+		}
+		return m, cmd
+
+	case menuDownload:
+		m.inputMode = true
+		m.inputPrompt = "Download to directory"
+		m.inputText = "./"
+		m.inputAction = menuDownload
+		m.menuTarget = target // keep target for input completion
+		return m, nil
+
+	case menuDelete:
+		m.loading = true
+		return m, tea.Batch(m.startLoading(), m.deleteObject(target.entry.key))
+
+	case menuCopy:
+		m.inputMode = true
+		m.inputPrompt = "Copy to path"
+		m.inputText = target.entry.key
+		m.inputAction = menuCopy
+		m.menuTarget = target
+		return m, nil
+
+	case menuMove:
+		m.inputMode = true
+		m.inputPrompt = "Move to path"
+		m.inputText = target.entry.key
+		m.inputAction = menuMove
+		m.menuTarget = target
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m model) executeInput(action menuAction, text string) (tea.Model, tea.Cmd) {
+	target := m.menuTarget
+	m.menuTarget = nil
+
+	if target == nil || text == "" {
+		return m, nil
+	}
+
+	switch action {
+	case menuDownload:
+		if m.downloadFn == nil {
+			m.message = "Download not available"
+			return m, nil
+		}
+		cmd, err := m.execDownload(target.entry.key, text)
+		if err != nil {
+			m.message = apierror.Classify(err).Error()
+			return m, nil
+		}
+		return m, cmd
+
+	case menuCopy:
+		if text == target.entry.key {
+			m.message = "Source and destination are the same"
+			return m, nil
+		}
+		m.loading = true
+		return m, tea.Batch(m.startLoading(), m.copyObject(target.entry.key, text))
+
+	case menuMove:
+		if text == target.entry.key {
+			m.message = "Source and destination are the same"
+			return m, nil
+		}
+		m.loading = true
+		return m, tea.Batch(m.startLoading(), m.moveObject(target.entry.key, text))
+	}
+	return m, nil
+}
+
+func (m model) deleteObject(key string) tea.Cmd {
+	client := m.client
+	ctx := m.ctx
+	bucket := m.bucket
+	b := m.browser
+	return func() tea.Msg {
+		if err := client.Delete(ctx, bucket, key); err != nil {
+			return actionDoneMsg{err: err}
+		}
+		// Rebuild the view to reflect the deletion
+		nodes, header, canGoUp, err := b.buildView(ctx)
+		if err != nil {
+			return actionDoneMsg{message: "Deleted " + key, err: nil}
+		}
+		return navigatedMsg{nodes: nodes, header: header, canGoUp: canGoUp, bucket: bucket}
+	}
+}
+
+func (m model) copyObject(srcKey, dstKey string) tea.Cmd {
+	client := m.client
+	ctx := m.ctx
+	bucket := m.bucket
+	b := m.browser
+	return func() tea.Msg {
+		if err := client.Copy(ctx, bucket, srcKey, dstKey); err != nil {
+			return actionDoneMsg{err: err}
+		}
+		nodes, header, canGoUp, err := b.buildView(ctx)
+		if err != nil {
+			return actionDoneMsg{message: "Copied to " + dstKey}
+		}
+		return navigatedMsg{nodes: nodes, header: header, canGoUp: canGoUp, bucket: bucket}
+	}
+}
+
+func (m model) moveObject(srcKey, dstKey string) tea.Cmd {
+	client := m.client
+	ctx := m.ctx
+	bucket := m.bucket
+	b := m.browser
+	return func() tea.Msg {
+		if err := client.Copy(ctx, bucket, srcKey, dstKey); err != nil {
+			return actionDoneMsg{err: err}
+		}
+		if err := client.Delete(ctx, bucket, srcKey); err != nil {
+			return actionDoneMsg{err: fmt.Errorf("copied but failed to delete source: %w", err)}
+		}
+		nodes, header, canGoUp, err := b.buildView(ctx)
+		if err != nil {
+			return actionDoneMsg{message: "Moved to " + dstKey}
+		}
+		return navigatedMsg{nodes: nodes, header: header, canGoUp: canGoUp, bucket: bucket}
+	}
+}
+
+// execEditMeta returns a tea.Exec command that suspends the TUI and runs the metadata edit.
+func (m model) execEditMeta(key string) (tea.Cmd, error) {
+	if m.editMetaFn == nil {
+		return nil, fmt.Errorf("metadata editing not available")
+	}
+	raw := fmt.Sprintf("%s://%s/%s", m.scheme, m.bucket, key)
+	u, err := uri.Parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	cmd := &editMetaCommand{editMetaFn: m.editMetaFn, uri: u}
+	return tea.Exec(cmd, func(err error) tea.Msg {
+		return editDoneMsg{err: err}
+	}), nil
+}
+
+// execDownload returns a tea.Exec command that suspends the TUI and downloads the file.
+func (m model) execDownload(key, dir string) (tea.Cmd, error) {
+	raw := fmt.Sprintf("%s://%s/%s", m.scheme, m.bucket, key)
+	u, err := uri.Parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	cmd := &downloadCommand{downloadFn: m.downloadFn, uri: u, dir: dir}
+	return tea.Exec(cmd, func(err error) tea.Msg {
+		return editDoneMsg{err: err}
+	}), nil
+}
+
+// editMetaCommand implements tea.ExecCommand to run metadata editing
+// while the TUI is suspended.
+type editMetaCommand struct {
+	editMetaFn EditMetaFunc
+	uri        *uri.URI
+	stdin      io.Reader
+	stdout     io.Writer
+	stderr     io.Writer
+}
+
+func (c *editMetaCommand) Run() error           { return c.editMetaFn(c.uri) }
+func (c *editMetaCommand) SetStdin(r io.Reader)  { c.stdin = r }
+func (c *editMetaCommand) SetStdout(w io.Writer) { c.stdout = w }
+func (c *editMetaCommand) SetStderr(w io.Writer) { c.stderr = w }
+
+// downloadCommand implements tea.ExecCommand to download a file
+// while the TUI is suspended.
+type downloadCommand struct {
+	downloadFn DownloadFunc
+	uri        *uri.URI
+	dir        string
+	stdin      io.Reader
+	stdout     io.Writer
+	stderr     io.Writer
+}
+
+func (c *downloadCommand) Run() error           { return c.downloadFn(c.uri, c.dir) }
+func (c *downloadCommand) SetStdin(r io.Reader)  { c.stdin = r }
+func (c *downloadCommand) SetStdout(w io.Writer) { c.stdout = w }
+func (c *downloadCommand) SetStderr(w io.Writer) { c.stderr = w }
 
 // execEdit returns a tea.Exec command that suspends the TUI and runs the edit.
 func (m model) execEdit(key string) (tea.Cmd, error) {
@@ -610,6 +950,29 @@ func (m model) View() string {
 		b.WriteString("\n  " + styleMessage.Render(m.message) + "\n")
 	}
 
+	// Context menu
+	if m.menuOpen && m.menuTarget != nil {
+		b.WriteString("\n")
+		var menuBuf strings.Builder
+		menuBuf.WriteString(styleMeta.Render(m.menuTarget.entry.name) + "\n")
+		for i, item := range menuItems {
+			prefix := "  "
+			if i == m.menuCursor {
+				prefix = styleCursor.Render("> ")
+				menuBuf.WriteString(prefix + styleMenuSelected.Render(item.label) + "\n")
+			} else {
+				menuBuf.WriteString(prefix + styleMenuItem.Render(item.label) + "\n")
+			}
+		}
+		b.WriteString(styleMenuBorder.Render(menuBuf.String()))
+		b.WriteString("\n")
+	}
+
+	// Input line
+	if m.inputMode {
+		b.WriteString("\n  " + styleInput.Render(m.inputPrompt+": "+m.inputText) + "▏\n")
+	}
+
 	// Filter line
 	if m.filtering {
 		b.WriteString("\n  " + styleFilter.Render("/ "+m.filterText) + "▏\n")
@@ -621,11 +984,19 @@ func (m model) View() string {
 		frame := spinnerFrames[m.spinnerFrame%len(spinnerFrames)]
 		b.WriteString(styleHelp.Render("  "+frame+" Loading...") + "\n")
 	}
-	help := "  ↑/↓ navigate  ←/→ collapse/expand  enter select"
-	if m.canGoUp {
-		help += "  - up"
+
+	var help string
+	if m.menuOpen {
+		help = "  ↑/↓ navigate  enter select  esc/← close"
+	} else if m.inputMode {
+		help = "  enter confirm  esc cancel"
+	} else {
+		help = "  ↑/↓ navigate  ←/→ collapse/expand  enter select  → menu"
+		if m.canGoUp {
+			help += "  - up"
+		}
+		help += "  / filter  esc×2 quit"
 	}
-	help += "  / filter  esc×2 quit"
 	b.WriteString(styleHelp.Render(help) + "\n")
 
 	return b.String()

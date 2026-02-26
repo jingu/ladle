@@ -338,12 +338,43 @@ func runMetaEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flag
 func runBrowser(ctx context.Context, client storage.Client, u *uri.URI, f *flags) error {
 	b := browser.New(client, u, os.Stdin, os.Stderr, version)
 	editFn := func(selected *uri.URI) error {
-		if f.meta {
-			return runMetaEdit(ctx, client, selected, f)
-		}
 		return runFileEdit(ctx, client, selected, f)
 	}
-	return b.Run(ctx, editFn)
+	editMetaFn := func(selected *uri.URI) error {
+		return runMetaEdit(ctx, client, selected, f)
+	}
+	downloadFn := func(selected *uri.URI, dir string) error {
+		return runDownload(ctx, client, selected, dir)
+	}
+	return b.Run(ctx, editFn,
+		browser.WithEditMeta(editMetaFn),
+		browser.WithDownload(downloadFn),
+	)
+}
+
+func runDownload(ctx context.Context, client storage.Client, u *uri.URI, dir string) error {
+	// Ensure directory exists
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("creating directory %s: %w", dir, err)
+	}
+
+	filename := filepath.Base(u.Key)
+	destPath := filepath.Join(dir, filename)
+
+	f, err := os.Create(destPath)
+	if err != nil {
+		return fmt.Errorf("creating file %s: %w", destPath, err)
+	}
+	defer f.Close()
+
+	sp := spinner.New(os.Stderr, fmt.Sprintf("Downloading %s ...", u))
+	sp.Start()
+	if err := client.Download(ctx, u.Bucket, u.Key, f); err != nil {
+		sp.Stop()
+		return err
+	}
+	sp.StopWithMessage(fmt.Sprintf("✓ Downloaded to %s", destPath))
+	return nil
 }
 
 const bucketCacheTTL = 5 * time.Minute

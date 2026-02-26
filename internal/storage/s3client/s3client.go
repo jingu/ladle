@@ -228,6 +228,31 @@ func (c *S3Client) ListBuckets(ctx context.Context) ([]string, error) {
 	return names, nil
 }
 
+func (c *S3Client) Delete(ctx context.Context, bucket, key string) error {
+	_, err := c.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return fmt.Errorf("deleting s3://%s/%s: %w", bucket, key, err)
+	}
+	return nil
+}
+
+func (c *S3Client) Copy(ctx context.Context, bucket, srcKey, dstKey string) error {
+	encodedSrc := encodeKeySegments(srcKey)
+	source := fmt.Sprintf("%s/%s", bucket, encodedSrc)
+	_, err := c.client.CopyObject(ctx, &s3.CopyObjectInput{
+		Bucket:     aws.String(bucket),
+		Key:        aws.String(dstKey),
+		CopySource: aws.String(source),
+	})
+	if err != nil {
+		return fmt.Errorf("copying s3://%s/%s to s3://%s/%s: %w", bucket, srcKey, bucket, dstKey, err)
+	}
+	return nil
+}
+
 // encodeKeySegments URL-encodes each path segment of an S3 key per RFC 3986.
 func encodeKeySegments(key string) string {
 	segments := strings.Split(key, "/")
