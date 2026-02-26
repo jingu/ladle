@@ -73,6 +73,12 @@ type Browser struct {
 	expanded          map[string]bool               // expanded directories keyed by full key
 	childCache        map[string][]storage.ListEntry // cached child entries
 	heightOverride    int                            // for testing; 0 means use terminal
+	flash             string                         // one-shot message shown until next keypress
+}
+
+// SetFlash sets a one-shot message that is displayed until the next keypress.
+func (b *Browser) SetFlash(msg string) {
+	b.flash = msg
 }
 
 // New creates a new Browser.
@@ -239,6 +245,8 @@ func (b *Browser) handleInput(ctx context.Context, items []item, cursor int) (in
 		if err != nil {
 			return 0, true, items
 		}
+
+		b.flash = "" // clear flash on any keypress
 
 		if filtering {
 			changed := false
@@ -483,6 +491,9 @@ func (b *Browser) renderFiltered(items []item, visible []int, cursor int, filter
 	if !hasContent {
 		overhead++ // empty/no-matches line
 	}
+	if b.flash != "" {
+		overhead++ // flash message line
+	}
 	maxRows := b.termHeight() - overhead
 	if maxRows < 1 {
 		maxRows = 1
@@ -552,6 +563,11 @@ func (b *Browser) renderFiltered(items []item, visible []int, cursor int, filter
 
 	if hasBelow {
 		b.w("    %s(%d more below)%s\r\n", ansiDim, total-end, ansiReset)
+	}
+
+	// Flash message
+	if b.flash != "" {
+		b.w("  %s%s%s\r\n", ansiYellow, b.flash, ansiReset)
 	}
 
 	// Help line

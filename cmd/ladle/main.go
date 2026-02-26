@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jingu/ladle/internal/apierror"
 	"github.com/jingu/ladle/internal/browser"
 	"github.com/jingu/ladle/internal/completion"
 	"github.com/jingu/ladle/internal/contenttype"
@@ -28,6 +29,7 @@ var version = "dev"
 
 func main() {
 	if err := newRootCmd().Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
@@ -67,7 +69,7 @@ Examples:
 		SilenceErrors: true,
 		Args:          cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return run(cmd, args, f)
+			return apierror.Classify(run(cmd, args, f))
 		},
 	}
 
@@ -333,11 +335,11 @@ func runBrowser(ctx context.Context, client storage.Client, u *uri.URI, f *flags
 		if sel.Action == browser.ActionEdit {
 			if f.meta {
 				if err := runMetaEdit(ctx, client, sel.URI, f); err != nil {
-					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					b.SetFlash(fmt.Sprintf("Error: %v", apierror.Classify(err)))
 				}
 			} else {
 				if err := runFileEdit(ctx, client, sel.URI, f); err != nil {
-					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					b.SetFlash(fmt.Sprintf("Error: %v", apierror.Classify(err)))
 				}
 			}
 			// Return to browser after editing
