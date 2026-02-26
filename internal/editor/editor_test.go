@@ -7,18 +7,8 @@ import (
 )
 
 func TestResolveEditor(t *testing.T) {
-	// Clear all env vars first
-	origLadle := os.Getenv("LADLE_EDITOR")
-	origEditor := os.Getenv("EDITOR")
-	origVisual := os.Getenv("VISUAL")
-	defer func() {
-		os.Setenv("LADLE_EDITOR", origLadle)
-		os.Setenv("EDITOR", origEditor)
-		os.Setenv("VISUAL", origVisual)
-	}()
-
 	t.Run("flag takes priority", func(t *testing.T) {
-		os.Setenv("LADLE_EDITOR", "nano")
+		t.Setenv("LADLE_EDITOR", "nano")
 		result := ResolveEditor("code")
 		if result != "code" {
 			t.Errorf("got %q, want %q", result, "code")
@@ -26,8 +16,8 @@ func TestResolveEditor(t *testing.T) {
 	})
 
 	t.Run("LADLE_EDITOR second priority", func(t *testing.T) {
-		os.Setenv("LADLE_EDITOR", "emacs")
-		os.Setenv("EDITOR", "vim")
+		t.Setenv("LADLE_EDITOR", "emacs")
+		t.Setenv("EDITOR", "vim")
 		result := ResolveEditor("")
 		if result != "emacs" {
 			t.Errorf("got %q, want %q", result, "emacs")
@@ -35,9 +25,9 @@ func TestResolveEditor(t *testing.T) {
 	})
 
 	t.Run("EDITOR third priority", func(t *testing.T) {
-		os.Unsetenv("LADLE_EDITOR")
-		os.Setenv("EDITOR", "vim")
-		os.Setenv("VISUAL", "code")
+		t.Setenv("LADLE_EDITOR", "")
+		t.Setenv("EDITOR", "vim")
+		t.Setenv("VISUAL", "code")
 		result := ResolveEditor("")
 		if result != "vim" {
 			t.Errorf("got %q, want %q", result, "vim")
@@ -45,9 +35,9 @@ func TestResolveEditor(t *testing.T) {
 	})
 
 	t.Run("VISUAL fourth priority", func(t *testing.T) {
-		os.Unsetenv("LADLE_EDITOR")
-		os.Unsetenv("EDITOR")
-		os.Setenv("VISUAL", "code")
+		t.Setenv("LADLE_EDITOR", "")
+		t.Setenv("EDITOR", "")
+		t.Setenv("VISUAL", "code")
 		result := ResolveEditor("")
 		if result != "code" {
 			t.Errorf("got %q, want %q", result, "code")
@@ -55,9 +45,9 @@ func TestResolveEditor(t *testing.T) {
 	})
 
 	t.Run("fallback to vi", func(t *testing.T) {
-		os.Unsetenv("LADLE_EDITOR")
-		os.Unsetenv("EDITOR")
-		os.Unsetenv("VISUAL")
+		t.Setenv("LADLE_EDITOR", "")
+		t.Setenv("EDITOR", "")
+		t.Setenv("VISUAL", "")
 		result := ResolveEditor("")
 		if result != "vi" {
 			t.Errorf("got %q, want %q", result, "vi")

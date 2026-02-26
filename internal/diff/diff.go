@@ -32,8 +32,8 @@ func Generate(original, modified, labelOrig, labelMod string) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("--- %s\n", labelOrig))
-	sb.WriteString(fmt.Sprintf("+++ %s\n", labelMod))
+	fmt.Fprintf(&sb, "--- %s\n", labelOrig)
+	fmt.Fprintf(&sb, "+++ %s\n", labelMod)
 
 	for _, h := range hunks {
 		sb.WriteString(h.String())
@@ -46,15 +46,15 @@ func Print(w io.Writer, diffText string) {
 	for _, line := range strings.Split(diffText, "\n") {
 		switch {
 		case strings.HasPrefix(line, "---"), strings.HasPrefix(line, "+++"):
-			fmt.Fprintf(w, "\033[1m%s\033[0m\n", line)
+			_, _ = fmt.Fprintf(w, "\033[1m%s\033[0m\n", line)
 		case strings.HasPrefix(line, "@@"):
-			fmt.Fprintf(w, "\033[36m%s\033[0m\n", line)
+			_, _ = fmt.Fprintf(w, "\033[36m%s\033[0m\n", line)
 		case strings.HasPrefix(line, "+"):
-			fmt.Fprintf(w, "\033[32m%s\033[0m\n", line)
+			_, _ = fmt.Fprintf(w, "\033[32m%s\033[0m\n", line)
 		case strings.HasPrefix(line, "-"):
-			fmt.Fprintf(w, "\033[31m%s\033[0m\n", line)
+			_, _ = fmt.Fprintf(w, "\033[31m%s\033[0m\n", line)
 		default:
-			fmt.Fprintln(w, line)
+			_, _ = fmt.Fprintln(w, line)
 		}
 	}
 }
@@ -90,7 +90,7 @@ type diffLine struct {
 
 func (h *hunk) String() string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("@@ -%d,%d +%d,%d @@\n", h.origStart, h.origCount, h.modStart, h.modCount))
+	fmt.Fprintf(&sb, "@@ -%d,%d +%d,%d @@\n", h.origStart, h.origCount, h.modStart, h.modCount)
 	for _, l := range h.lines {
 		sb.WriteByte(l.op)
 		sb.WriteString(l.text)
