@@ -80,8 +80,8 @@ Examples:
 	cmd.Flags().StringVar(&f.installComp, "install-completion", "", "Generate completion script (bash|zsh|fish)")
 	cmd.Flags().BoolVar(&f.completeBucket, "complete-bucket", false, "Internal: complete bucket names")
 	cmd.Flags().BoolVar(&f.completePath, "complete-path", false, "Internal: complete object paths")
-	cmd.Flags().MarkHidden("complete-bucket")
-	cmd.Flags().MarkHidden("complete-path")
+	_ = cmd.Flags().MarkHidden("complete-bucket")
+	_ = cmd.Flags().MarkHidden("complete-path")
 
 	return cmd
 }
