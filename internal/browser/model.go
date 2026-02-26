@@ -48,6 +48,7 @@ type navigatedMsg struct {
 	nodes   []*node
 	header  string
 	canGoUp bool
+	bucket  string
 	err     error
 }
 
@@ -134,7 +135,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.nodes = msg.nodes
 		m.header = msg.header
 		m.canGoUp = msg.canGoUp
+		m.bucket = msg.bucket
 		m.cursor = 0
+		m.filtering = false
+		m.filterText = ""
 		return m, nil
 	}
 	return m, nil
@@ -192,6 +196,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if n.entry.isDir {
 			if !n.loaded {
+				m.loading = true
 				return m, tea.Batch(m.startLoading(), m.loadChildren(n))
 			}
 			n.expanded = !n.expanded
@@ -212,6 +217,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			n := visible[m.cursor]
 			if n != nil && n.entry.isDir {
 				if !n.loaded {
+					m.loading = true
 					return m, tea.Batch(m.startLoading(), m.loadChildren(n))
 				}
 				if !n.expanded {
@@ -331,7 +337,7 @@ func (m model) navigateUp() tea.Cmd {
 	return func() tea.Msg {
 		b.goUp()
 		nodes, header, canGoUp, err := b.buildView(ctx)
-		return navigatedMsg{nodes: nodes, header: header, canGoUp: canGoUp, err: err}
+		return navigatedMsg{nodes: nodes, header: header, canGoUp: canGoUp, bucket: b.bucket, err: err}
 	}
 }
 
@@ -343,7 +349,7 @@ func (m model) navigateToBucket(bucket string) tea.Cmd {
 		b.bucket = bucket
 		b.prefix = ""
 		nodes, header, canGoUp, err := b.buildView(ctx)
-		return navigatedMsg{nodes: nodes, header: header, canGoUp: canGoUp, err: err}
+		return navigatedMsg{nodes: nodes, header: header, canGoUp: canGoUp, bucket: b.bucket, err: err}
 	}
 }
 
@@ -436,10 +442,9 @@ func (m model) findParent(visible []*node, cursorIdx int) (*node, int) {
 	return nil, -1
 }
 
-// startLoading sets loading state and returns a tick command to start the spinner.
-func (m *model) startLoading() tea.Cmd {
-	m.loading = true
-	m.spinnerFrame = 0
+// startLoading returns a tick command to start the spinner.
+// Caller must set m.loading = true before calling this.
+func (m model) startLoading() tea.Cmd {
 	return tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg { return tickMsg{} })
 }
 

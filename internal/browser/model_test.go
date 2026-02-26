@@ -813,7 +813,7 @@ func TestNavigatedMsg(t *testing.T) {
 		{entry: entry{name: "other.txt", key: "other.txt"}},
 		{entry: entry{name: "another.txt", key: "another.txt"}},
 	}
-	msg := navigatedMsg{nodes: newNodes, header: "s3://newbucket", canGoUp: true}
+	msg := navigatedMsg{nodes: newNodes, header: "s3://newbucket", canGoUp: true, bucket: "newbucket"}
 	updated, _ := m.Update(msg)
 	m = updated.(model)
 
@@ -828,5 +828,58 @@ func TestNavigatedMsg(t *testing.T) {
 	}
 	if m.cursor != 0 {
 		t.Errorf("expected cursor reset to 0, got %d", m.cursor)
+	}
+	if m.bucket != "newbucket" {
+		t.Errorf("expected bucket 'newbucket', got %q", m.bucket)
+	}
+}
+
+func TestNavigatedMsgSyncsBucket(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	// Simulate initial bucket = "test"
+	if m.bucket != "test" {
+		t.Fatalf("expected initial bucket 'test', got %q", m.bucket)
+	}
+
+	// Simulate navigateToBucket result
+	msg := navigatedMsg{
+		nodes:   []*node{{entry: entry{name: "new.txt", key: "new.txt"}}},
+		header:  "s3://otherbucket",
+		canGoUp: true,
+		bucket:  "otherbucket",
+	}
+	updated, _ := m.Update(msg)
+	m = updated.(model)
+
+	if m.bucket != "otherbucket" {
+		t.Errorf("expected bucket synced to 'otherbucket', got %q", m.bucket)
+	}
+}
+
+func TestNavigatedMsgResetsFilter(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.filtering = true
+	m.filterText = "old"
+
+	msg := navigatedMsg{
+		nodes:   []*node{{entry: entry{name: "new.txt", key: "new.txt"}}},
+		header:  "s3://test",
+		canGoUp: true,
+		bucket:  "test",
+	}
+	updated, _ := m.Update(msg)
+	m = updated.(model)
+
+	if m.filtering {
+		t.Error("expected filtering to be false after navigation")
+	}
+	if m.filterText != "" {
+		t.Errorf("expected filterText empty after navigation, got %q", m.filterText)
 	}
 }
