@@ -215,8 +215,9 @@ func (b *Browser) appendTreeItems(items *[]item, entries []storage.ListEntry, pr
 }
 
 // handleInput renders the item list and blocks until the user makes a selection.
-// It returns the selected index (into items), whether the user explicitly quit,
-// and optionally a rebuilt items slice (non-nil if tree expansion changed).
+// It returns the selected index (into the returned items slice), whether the user
+// explicitly quit, and the current items slice (which may have been rebuilt by
+// tree expansion/collapse).
 func (b *Browser) handleInput(ctx context.Context, items []item, cursor int) (int, bool, []item) {
 	filter := ""
 	filtering := false
@@ -487,14 +488,11 @@ func (b *Browser) renderFiltered(items []item, visible []int, cursor int, filter
 	}
 
 	total := len(visible)
-	needsScroll := total > maxRows
 
-	// Reserve lines for scroll indicators
+	// Reserve 2 lines for scroll indicators when list exceeds viewport
 	itemRows := maxRows
-	if needsScroll {
-		// We'll need at least the bottom indicator; top indicator appears when scrolled
-		// Reserve 1 line for bottom indicator always when scrolling is needed
-		itemRows = maxRows - 1
+	if total > maxRows {
+		itemRows = maxRows - 2
 		if itemRows < 1 {
 			itemRows = 1
 		}
@@ -521,31 +519,6 @@ func (b *Browser) renderFiltered(items []item, visible []int, cursor int, filter
 
 	hasAbove := *scrollOffset > 0
 	hasBelow := end < total
-
-	// If top indicator appears, reduce item rows by 1 more
-	if hasAbove && end-*scrollOffset >= itemRows && hasBelow {
-		// Both indicators needed — reserve one more row
-		itemRows = maxRows - 2
-		if itemRows < 1 {
-			itemRows = 1
-		}
-		// Recalculate with reduced itemRows
-		if cursor >= *scrollOffset+itemRows {
-			*scrollOffset = cursor - itemRows + 1
-		}
-		if *scrollOffset > total-itemRows {
-			*scrollOffset = total - itemRows
-		}
-		if *scrollOffset < 0 {
-			*scrollOffset = 0
-		}
-		end = *scrollOffset + itemRows
-		if end > total {
-			end = total
-		}
-		hasAbove = *scrollOffset > 0
-		hasBelow = end < total
-	}
 
 	// Compute tree prefixes for ALL visible items (needed for correct │ lines)
 	prefixes := computeTreePrefixes(items, visible)
@@ -643,12 +616,12 @@ func (b *Browser) runBucketList(ctx context.Context, cursor *int) (*Selection, b
 		*cursor = len(items) - 1
 	}
 
-	idx, quit, _ := b.handleInput(ctx, items, *cursor)
+	idx, quit, currentItems := b.handleInput(ctx, items, *cursor)
 	if quit {
 		return &Selection{Action: ActionQuit}, true, nil
 	}
 
-	sel := items[idx]
+	sel := currentItems[idx]
 	if sel.isNav && sel.navID == "quit" {
 		return &Selection{Action: ActionQuit}, true, nil
 	}
@@ -708,8 +681,10 @@ func computeTreePrefixes(items []item, visible []int) []string {
 		// Update continueLine for this depth
 		continueLine[it.depth] = !isLast
 		// Clear deeper levels (they are no longer valid)
-		for d := it.depth + 1; d <= it.depth+10; d++ {
-			delete(continueLine, d)
+		for d := range continueLine {
+			if d > it.depth {
+				delete(continueLine, d)
+			}
 		}
 
 		prefixes[i] = b.String()
