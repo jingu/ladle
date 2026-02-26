@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -72,6 +74,11 @@ var menuItems = []struct {
 type tabCompleteMsg struct {
 	candidates []string
 	prefix     string // the directory prefix used for listing
+}
+
+// localTabCompleteMsg carries local filesystem completion candidates.
+type localTabCompleteMsg struct {
+	candidates []string
 }
 
 // actionDoneMsg is sent after an async action (delete, copy, move) completes.
@@ -179,6 +186,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tabCompleteMsg:
 		if m.inputMode {
 			m.inputText = completeInput(m.inputText, msg.prefix, msg.candidates)
+		}
+		return m, nil
+	case localTabCompleteMsg:
+		if m.inputMode {
+			m.inputText = completeLocalInput(m.inputText, msg.candidates)
 		}
 		return m, nil
 	case actionDoneMsg:
@@ -451,6 +463,9 @@ func (m model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.inputAction == menuCopy || m.inputAction == menuMove {
 			return m, m.tabComplete(m.inputText)
 		}
+		if m.inputAction == menuDownload {
+			return m, localTabComplete(m.inputText)
+		}
 		return m, nil
 	case tea.KeyCtrlC:
 		m.quitting = true
@@ -662,6 +677,59 @@ func completeInput(input, dirPrefix string, candidates []string) string {
 	}
 
 	// Multiple matches: complete to longest common prefix.
+	lcp := matches[0]
+	for _, m := range matches[1:] {
+		lcp = longestCommonPrefix(lcp, m)
+	}
+	if len(lcp) > len(input) {
+		return lcp
+	}
+	return input
+}
+
+// localTabComplete fires an async command to list local directory entries.
+func localTabComplete(input string) tea.Cmd {
+	return func() tea.Msg {
+		dir := filepath.Dir(input)
+		if dir == "" {
+			dir = "."
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return localTabCompleteMsg{candidates: nil}
+		}
+		var candidates []string
+		for _, e := range entries {
+			name := filepath.Join(dir, e.Name())
+			if e.IsDir() {
+				name += string(os.PathSeparator)
+			}
+			candidates = append(candidates, name)
+		}
+		return localTabCompleteMsg{candidates: candidates}
+	}
+}
+
+// completeLocalInput computes completed local path from candidates.
+func completeLocalInput(input string, candidates []string) string {
+	if len(candidates) == 0 {
+		return input
+	}
+
+	var matches []string
+	for _, c := range candidates {
+		if strings.HasPrefix(c, input) {
+			matches = append(matches, c)
+		}
+	}
+
+	if len(matches) == 0 {
+		return input
+	}
+	if len(matches) == 1 {
+		return matches[0]
+	}
+
 	lcp := matches[0]
 	for _, m := range matches[1:] {
 		lcp = longestCommonPrefix(lcp, m)
@@ -1077,11 +1145,7 @@ func (m model) View() string {
 	if m.menuOpen {
 		help = "  ↑/↓ navigate  enter select  esc/← close"
 	} else if m.inputMode {
-		if m.inputAction == menuCopy || m.inputAction == menuMove {
-			help = "  tab complete  enter confirm  esc cancel"
-		} else {
-			help = "  enter confirm  esc cancel"
-		}
+		help = "  tab complete  enter confirm  esc cancel"
 	} else {
 		help = "  ↑/↓ navigate  ←/→ collapse/expand  enter select  → menu"
 		if m.canGoUp {

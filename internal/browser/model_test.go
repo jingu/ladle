@@ -3,6 +3,8 @@ package browser
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -1371,22 +1373,6 @@ func TestTabKeyInInputModeCopyMove(t *testing.T) {
 	}
 }
 
-func TestTabKeyNotInDownloadMode(t *testing.T) {
-	nodes := []*node{
-		{entry: entry{name: "file.txt", key: "file.txt"}},
-	}
-	m := newTestModel(nodes, false)
-	m.inputMode = true
-	m.inputText = "./"
-	m.inputAction = menuDownload
-
-	// Tab in download mode should not trigger completion
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyTab})
-	if cmd != nil {
-		t.Error("tab should not trigger completion in download mode")
-	}
-}
-
 func TestTabCompleteMsg(t *testing.T) {
 	nodes := []*node{
 		{entry: entry{name: "file.txt", key: "file.txt"}},
@@ -1426,6 +1412,113 @@ func TestTabCompleteMsgSingleCandidate(t *testing.T) {
 
 	if m.inputText != "path/file.txt" {
 		t.Errorf("expected 'path/file.txt', got %q", m.inputText)
+	}
+}
+
+func TestTabKeyInDownloadMode(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.inputMode = true
+	m.inputText = "./"
+	m.inputAction = menuDownload
+
+	// Tab in download mode should now trigger local completion
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if cmd == nil {
+		t.Fatal("expected a command for local tab completion")
+	}
+
+	// Execute the command - it should return localTabCompleteMsg
+	msg := cmd()
+	_, ok := msg.(localTabCompleteMsg)
+	if !ok {
+		t.Fatalf("expected localTabCompleteMsg, got %T", msg)
+	}
+}
+
+func TestLocalTabComplete(t *testing.T) {
+	// Create a temp directory with some files
+	tmpDir := t.TempDir()
+	os.WriteFile(filepath.Join(tmpDir, "alpha.txt"), []byte("a"), 0644)
+	os.WriteFile(filepath.Join(tmpDir, "alpha.log"), []byte("b"), 0644)
+	os.Mkdir(filepath.Join(tmpDir, "beta"), 0755)
+
+	cmd := localTabComplete(filepath.Join(tmpDir, "al"))
+	msg := cmd().(localTabCompleteMsg)
+
+	// Should have 3 candidates: alpha.log, alpha.txt, beta/
+	if len(msg.candidates) != 3 {
+		t.Fatalf("expected 3 candidates, got %d: %v", len(msg.candidates), msg.candidates)
+	}
+}
+
+func TestLocalTabCompleteSingleMatch(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.WriteFile(filepath.Join(tmpDir, "unique.txt"), []byte("a"), 0644)
+
+	input := filepath.Join(tmpDir, "uni")
+	cmd := localTabComplete(input)
+	msg := cmd().(localTabCompleteMsg)
+
+	nodes := []*node{{entry: entry{name: "file.txt", key: "file.txt"}}}
+	m := newTestModel(nodes, false)
+	m.inputMode = true
+	m.inputText = input
+
+	updated, _ := m.Update(msg)
+	m = updated.(model)
+
+	expected := filepath.Join(tmpDir, "unique.txt")
+	if m.inputText != expected {
+		t.Errorf("expected %q, got %q", expected, m.inputText)
+	}
+}
+
+func TestLocalTabCompleteDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.Mkdir(filepath.Join(tmpDir, "subdir"), 0755)
+
+	input := filepath.Join(tmpDir, "sub")
+	cmd := localTabComplete(input)
+	msg := cmd().(localTabCompleteMsg)
+
+	nodes := []*node{{entry: entry{name: "file.txt", key: "file.txt"}}}
+	m := newTestModel(nodes, false)
+	m.inputMode = true
+	m.inputText = input
+
+	updated, _ := m.Update(msg)
+	m = updated.(model)
+
+	expected := filepath.Join(tmpDir, "subdir") + string(os.PathSeparator)
+	if m.inputText != expected {
+		t.Errorf("expected %q, got %q", expected, m.inputText)
+	}
+}
+
+func TestCompleteLocalInputSingleMatch(t *testing.T) {
+	candidates := []string{"/tmp/dir/file.txt", "/tmp/dir/other.log"}
+	result := completeLocalInput("/tmp/dir/f", candidates)
+	if result != "/tmp/dir/file.txt" {
+		t.Errorf("expected '/tmp/dir/file.txt', got %q", result)
+	}
+}
+
+func TestCompleteLocalInputMultipleMatches(t *testing.T) {
+	candidates := []string{"/tmp/dir/config.json", "/tmp/dir/config.yaml"}
+	result := completeLocalInput("/tmp/dir/con", candidates)
+	if result != "/tmp/dir/config." {
+		t.Errorf("expected '/tmp/dir/config.', got %q", result)
+	}
+}
+
+func TestCompleteLocalInputNoMatch(t *testing.T) {
+	candidates := []string{"/tmp/dir/file.txt"}
+	result := completeLocalInput("/tmp/dir/xyz", candidates)
+	if result != "/tmp/dir/xyz" {
+		t.Errorf("expected unchanged '/tmp/dir/xyz', got %q", result)
 	}
 }
 
