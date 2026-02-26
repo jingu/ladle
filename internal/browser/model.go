@@ -68,6 +68,12 @@ var menuItems = []struct {
 	{menuDelete, "Delete"},
 }
 
+// tabCompleteMsg carries completion candidates back to the input handler.
+type tabCompleteMsg struct {
+	candidates []string
+	prefix     string // the directory prefix used for listing
+}
+
 // actionDoneMsg is sent after an async action (delete, copy, move) completes.
 type actionDoneMsg struct {
 	message string
@@ -168,6 +174,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.loading {
 			m.spinnerFrame = (m.spinnerFrame + 1) % len(spinnerFrames)
 			return m, tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg { return tickMsg{} })
+		}
+		return m, nil
+	case tabCompleteMsg:
+		if m.inputMode {
+			m.inputText = completeInput(m.inputText, msg.prefix, msg.candidates)
 		}
 		return m, nil
 	case actionDoneMsg:
@@ -436,6 +447,11 @@ func (m model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.inputText = m.inputText[:len(m.inputText)-1]
 		}
 		return m, nil
+	case tea.KeyTab:
+		if m.inputAction == menuCopy || m.inputAction == menuMove {
+			return m, m.tabComplete(m.inputText)
+		}
+		return m, nil
 	case tea.KeyCtrlC:
 		m.quitting = true
 		return m, tea.Quit
@@ -596,6 +612,78 @@ func (m model) moveObject(srcKey, dstKey string) tea.Cmd {
 		}
 		return navigatedMsg{nodes: nodes, header: header, canGoUp: canGoUp, bucket: bucket}
 	}
+}
+
+// tabComplete fires an async command to list objects matching the input prefix.
+func (m model) tabComplete(input string) tea.Cmd {
+	client := m.client
+	ctx := m.ctx
+	bucket := m.bucket
+
+	// Split input into directory prefix and partial name.
+	// e.g. "path/to/fi" -> prefix="path/to/", partial="fi"
+	dirPrefix := ""
+	if idx := strings.LastIndex(input, "/"); idx >= 0 {
+		dirPrefix = input[:idx+1]
+	}
+
+	return func() tea.Msg {
+		entries, err := client.List(ctx, bucket, dirPrefix, "/")
+		if err != nil {
+			return tabCompleteMsg{candidates: nil, prefix: dirPrefix}
+		}
+		var candidates []string
+		for _, e := range entries {
+			candidates = append(candidates, e.Key)
+		}
+		return tabCompleteMsg{candidates: candidates, prefix: dirPrefix}
+	}
+}
+
+// completeInput computes the completed input text from candidates.
+func completeInput(input, dirPrefix string, candidates []string) string {
+	if len(candidates) == 0 {
+		return input
+	}
+
+	// Filter candidates that match the current input as a prefix.
+	var matches []string
+	for _, c := range candidates {
+		if strings.HasPrefix(c, input) {
+			matches = append(matches, c)
+		}
+	}
+
+	if len(matches) == 0 {
+		return input
+	}
+	if len(matches) == 1 {
+		return matches[0]
+	}
+
+	// Multiple matches: complete to longest common prefix.
+	lcp := matches[0]
+	for _, m := range matches[1:] {
+		lcp = longestCommonPrefix(lcp, m)
+	}
+	if len(lcp) > len(input) {
+		return lcp
+	}
+	return input
+}
+
+// longestCommonPrefix returns the longest common prefix of two strings.
+func longestCommonPrefix(a, b string) string {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		if a[i] != b[i] {
+			return a[:i]
+		}
+	}
+	return a[:n]
 }
 
 // execEditMeta returns a tea.Exec command that suspends the TUI and runs the metadata edit.
@@ -989,7 +1077,11 @@ func (m model) View() string {
 	if m.menuOpen {
 		help = "  ↑/↓ navigate  enter select  esc/← close"
 	} else if m.inputMode {
-		help = "  enter confirm  esc cancel"
+		if m.inputAction == menuCopy || m.inputAction == menuMove {
+			help = "  tab complete  enter confirm  esc cancel"
+		} else {
+			help = "  enter confirm  esc cancel"
+		}
 	} else {
 		help = "  ↑/↓ navigate  ←/→ collapse/expand  enter select  → menu"
 		if m.canGoUp {

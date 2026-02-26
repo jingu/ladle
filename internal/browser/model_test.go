@@ -1264,3 +1264,187 @@ func TestActionDoneMsgWithError(t *testing.T) {
 		t.Errorf("expected error message, got %q", m.message)
 	}
 }
+
+func TestCompleteInputSingleMatch(t *testing.T) {
+	candidates := []string{"path/to/file.txt", "path/to/other.txt"}
+	result := completeInput("path/to/f", "path/to/", candidates)
+	if result != "path/to/file.txt" {
+		t.Errorf("expected 'path/to/file.txt', got %q", result)
+	}
+}
+
+func TestCompleteInputMultipleMatches(t *testing.T) {
+	candidates := []string{"dir/config.json", "dir/config.yaml", "dir/readme.md"}
+	result := completeInput("dir/con", "dir/", candidates)
+	if result != "dir/config." {
+		t.Errorf("expected 'dir/config.', got %q", result)
+	}
+}
+
+func TestCompleteInputNoMatch(t *testing.T) {
+	candidates := []string{"path/to/file.txt"}
+	result := completeInput("path/xyz", "path/", candidates)
+	if result != "path/xyz" {
+		t.Errorf("expected unchanged 'path/xyz', got %q", result)
+	}
+}
+
+func TestCompleteInputEmptyCandidates(t *testing.T) {
+	result := completeInput("some/path", "some/", nil)
+	if result != "some/path" {
+		t.Errorf("expected unchanged 'some/path', got %q", result)
+	}
+}
+
+func TestCompleteInputExactMatch(t *testing.T) {
+	candidates := []string{"dir/file.txt"}
+	result := completeInput("dir/file.txt", "dir/", candidates)
+	if result != "dir/file.txt" {
+		t.Errorf("expected 'dir/file.txt', got %q", result)
+	}
+}
+
+func TestCompleteInputRootLevel(t *testing.T) {
+	candidates := []string{"readme.md", "readme.txt"}
+	result := completeInput("read", "", candidates)
+	if result != "readme." {
+		t.Errorf("expected 'readme.', got %q", result)
+	}
+}
+
+func TestCompleteInputDirPrefix(t *testing.T) {
+	// When input is "logs/" and candidates include dirs
+	candidates := []string{"logs/2024/", "logs/2025/"}
+	result := completeInput("logs/20", "logs/", candidates)
+	if result != "logs/202" {
+		t.Errorf("expected 'logs/202', got %q", result)
+	}
+}
+
+func TestTabKeyInInputModeCopyMove(t *testing.T) {
+	mock := storage.NewMockClient()
+	mock.PutObject("test", "dir/file1.txt", []byte("a"), nil)
+	mock.PutObject("test", "dir/file2.txt", []byte("b"), nil)
+
+	nodes := []*node{
+		{entry: entry{name: "dir/file1.txt", key: "dir/file1.txt"}},
+	}
+	u, _ := uri.Parse("s3://test/")
+	b := New(mock, u, nil, nil, "test")
+	m := model{
+		nodes:       nodes,
+		client:      mock,
+		ctx:         context.Background(),
+		bucket:      "test",
+		scheme:      "s3",
+		browser:     b,
+		editFn:      func(u *uri.URI) error { return nil },
+		editMetaFn:  func(u *uri.URI) error { return nil },
+		inputMode:   true,
+		inputText:   "dir/file",
+		inputAction: menuCopy,
+	}
+
+	// Tab should return a command (async completion)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if cmd == nil {
+		t.Fatal("expected a command for tab completion")
+	}
+
+	// Execute the command to get the message
+	msg := cmd()
+	tcMsg, ok := msg.(tabCompleteMsg)
+	if !ok {
+		t.Fatalf("expected tabCompleteMsg, got %T", msg)
+	}
+	if len(tcMsg.candidates) != 2 {
+		t.Errorf("expected 2 candidates, got %d", len(tcMsg.candidates))
+	}
+
+	// Apply the message
+	updated, _ := m.Update(tcMsg)
+	m = updated.(model)
+	if m.inputText != "dir/file" {
+		// Both match "dir/file" prefix, so LCP is "dir/file" - stays the same
+		// since both are "dir/file1.txt" and "dir/file2.txt", LCP = "dir/file"
+		t.Errorf("expected 'dir/file', got %q", m.inputText)
+	}
+}
+
+func TestTabKeyNotInDownloadMode(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.inputMode = true
+	m.inputText = "./"
+	m.inputAction = menuDownload
+
+	// Tab in download mode should not trigger completion
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if cmd != nil {
+		t.Error("tab should not trigger completion in download mode")
+	}
+}
+
+func TestTabCompleteMsg(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.inputMode = true
+	m.inputText = "path/fi"
+
+	msg := tabCompleteMsg{
+		candidates: []string{"path/file.txt", "path/final.txt"},
+		prefix:     "path/",
+	}
+	updated, _ := m.Update(msg)
+	m = updated.(model)
+
+	if m.inputText != "path/fi" {
+		// LCP of "path/file.txt" and "path/final.txt" matching "path/fi" is "path/fi"
+		// Actually: both start with "path/fi", LCP = "path/fi" (l vs n at index 7)
+		t.Errorf("expected 'path/fi', got %q", m.inputText)
+	}
+}
+
+func TestTabCompleteMsgSingleCandidate(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.inputMode = true
+	m.inputText = "path/fi"
+
+	msg := tabCompleteMsg{
+		candidates: []string{"path/file.txt"},
+		prefix:     "path/",
+	}
+	updated, _ := m.Update(msg)
+	m = updated.(model)
+
+	if m.inputText != "path/file.txt" {
+		t.Errorf("expected 'path/file.txt', got %q", m.inputText)
+	}
+}
+
+func TestLongestCommonPrefix(t *testing.T) {
+	tests := []struct {
+		a, b     string
+		expected string
+	}{
+		{"abc", "abd", "ab"},
+		{"abc", "abc", "abc"},
+		{"abc", "xyz", ""},
+		{"abc", "ab", "ab"},
+		{"", "abc", ""},
+		{"abc", "", ""},
+	}
+	for _, tt := range tests {
+		got := longestCommonPrefix(tt.a, tt.b)
+		if got != tt.expected {
+			t.Errorf("longestCommonPrefix(%q, %q) = %q, want %q", tt.a, tt.b, got, tt.expected)
+		}
+	}
+}
