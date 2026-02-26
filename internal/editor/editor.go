@@ -33,7 +33,7 @@ func TempFile(filename string, content []byte) (string, error) {
 
 	path := filepath.Join(dir, filename)
 	if err := os.WriteFile(path, content, 0600); err != nil {
-		os.RemoveAll(dir)
+		_ = os.RemoveAll(dir)
 		return "", fmt.Errorf("writing temp file: %w", err)
 	}
 	return path, nil
@@ -61,7 +61,7 @@ func Open(editor, filePath string) error {
 // Cleanup removes the temp file and its parent directory.
 func Cleanup(path string) {
 	dir := filepath.Dir(path)
-	os.RemoveAll(dir)
+	_ = os.RemoveAll(dir)
 }
 
 // IsBinary checks if the content appears to be binary by looking for null bytes

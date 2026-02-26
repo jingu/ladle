@@ -9,13 +9,16 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/jingu/ladle/internal/apierror"
 	"github.com/jingu/ladle/internal/browser"
 	"github.com/jingu/ladle/internal/completion"
 	"github.com/jingu/ladle/internal/contenttype"
 	"github.com/jingu/ladle/internal/diff"
 	"github.com/jingu/ladle/internal/editor"
 	"github.com/jingu/ladle/internal/meta"
+	"github.com/jingu/ladle/internal/spinner"
 	"github.com/jingu/ladle/internal/storage"
 	"github.com/jingu/ladle/internal/storage/s3client"
 	"github.com/jingu/ladle/internal/uri"
@@ -60,12 +63,13 @@ Examples:
   ladle s3://bucket/path/to/file.html
   ladle --meta s3://bucket/path/to/file.html
   ladle --profile production s3://bucket/path/to/file.html
-  ladle s3://bucket/path/to/              # file browser mode`,
+  ladle s3://bucket/path/to/              # file browser mode
+  ladle s3://                             # bucket list browser`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return run(cmd, args, f)
+			return apierror.Classify(run(cmd, args, f))
 		},
 	}
 
@@ -112,7 +116,7 @@ func run(cmd *cobra.Command, args []string, f *flags) error {
 
 	// Handle internal completion helpers
 	if f.completeBucket {
-		return handleCompleteBucket(ctx, client, u)
+		return handleCompleteBucket(ctx, client, u, f.profile)
 	}
 	if f.completePath {
 		return handleCompletePath(ctx, client, u)
@@ -160,10 +164,13 @@ func newClient(ctx context.Context, u *uri.URI, f *flags) (storage.Client, error
 func runFileEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flags) error {
 	// Download file
 	var buf strings.Builder
-	fmt.Fprintf(os.Stderr, "Downloading %s ...\n", u)
+	sp := spinner.New(os.Stderr, fmt.Sprintf("Downloading %s ...", u))
+	sp.Start()
 	if err := client.Download(ctx, u.Bucket, u.Key, &buf); err != nil {
+		sp.Stop()
 		return err
 	}
+	sp.StopWithMessage(fmt.Sprintf("✓ Downloaded %s", u))
 	original := buf.String()
 
 	// Binary check
@@ -236,21 +243,26 @@ func runFileEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flag
 	existingMeta.ContentType = ct
 
 	// Upload
-	fmt.Fprintf(os.Stderr, "Uploading to %s ...\n", u)
+	sp = spinner.New(os.Stderr, fmt.Sprintf("Uploading to %s ...", u))
+	sp.Start()
 	if err := client.Upload(ctx, u.Bucket, u.Key, strings.NewReader(modified), existingMeta); err != nil {
+		sp.Stop()
 		return err
 	}
-	fmt.Fprintln(os.Stderr, "Done.")
+	sp.StopWithMessage(fmt.Sprintf("✓ Uploaded to %s", u))
 	return nil
 }
 
 func runMetaEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flags) error {
 	// Fetch metadata
-	fmt.Fprintf(os.Stderr, "Fetching metadata for %s ...\n", u)
+	sp := spinner.New(os.Stderr, fmt.Sprintf("Fetching metadata for %s ...", u))
+	sp.Start()
 	objMeta, err := client.HeadObject(ctx, u.Bucket, u.Key)
 	if err != nil {
+		sp.Stop()
 		return err
 	}
+	sp.StopWithMessage(fmt.Sprintf("✓ Fetched metadata for %s", u))
 
 	// Marshal to YAML
 	originalYAML, err := meta.Marshal(u.String(), objMeta)
@@ -313,11 +325,13 @@ func runMetaEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flag
 	}
 
 	// Update metadata using CopyObject
-	fmt.Fprintf(os.Stderr, "Updating metadata for %s ...\n", u)
+	sp = spinner.New(os.Stderr, fmt.Sprintf("Updating metadata for %s ...", u))
+	sp.Start()
 	if err := client.UpdateMetadata(ctx, u.Bucket, u.Key, newMeta); err != nil {
+		sp.Stop()
 		return err
 	}
-	fmt.Fprintln(os.Stderr, "Done.")
+	sp.StopWithMessage(fmt.Sprintf("✓ Updated metadata for %s", u))
 	return nil
 }
 
@@ -332,10 +346,16 @@ func runBrowser(ctx context.Context, client storage.Client, u *uri.URI, f *flags
 	return b.Run(ctx, editFn)
 }
 
-func handleCompleteBucket(ctx context.Context, client storage.Client, u *uri.URI) error {
-	buckets, err := client.ListBuckets(ctx)
+const bucketCacheTTL = 5 * time.Minute
+
+func handleCompleteBucket(ctx context.Context, client storage.Client, u *uri.URI, profile string) error {
+	buckets, err := loadBucketCache(profile)
 	if err != nil {
-		return nil // Silently fail for completions
+		buckets, err = client.ListBuckets(ctx)
+		if err != nil {
+			return nil // Silently fail for completions
+		}
+		_ = saveBucketCache(profile, buckets)
 	}
 	for _, b := range buckets {
 		if strings.HasPrefix(b, u.Bucket) {
@@ -343,6 +363,45 @@ func handleCompleteBucket(ctx context.Context, client storage.Client, u *uri.URI
 		}
 	}
 	return nil
+}
+
+func bucketCachePath(profile string) string {
+	if profile == "" {
+		profile = "default"
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".cache", "ladle", "buckets_"+profile+".cache")
+}
+
+func loadBucketCache(profile string) ([]string, error) {
+	p := bucketCachePath(profile)
+	info, err := os.Stat(p)
+	if err != nil {
+		return nil, err
+	}
+	if time.Since(info.ModTime()) > bucketCacheTTL {
+		return nil, fmt.Errorf("cache expired")
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return nil, err
+	}
+	content := strings.TrimSpace(string(data))
+	if content == "" {
+		return nil, nil
+	}
+	return strings.Split(content, "\n"), nil
+}
+
+func saveBucketCache(profile string, buckets []string) error {
+	p := bucketCachePath(profile)
+	if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
+		return err
+	}
+	return os.WriteFile(p, []byte(strings.Join(buckets, "\n")+"\n"), 0600)
 }
 
 func handleCompletePath(ctx context.Context, client storage.Client, u *uri.URI) error {
@@ -358,7 +417,7 @@ func handleCompletePath(ctx context.Context, client storage.Client, u *uri.URI) 
 }
 
 func confirm(in io.Reader, out io.Writer, prompt string) bool {
-	fmt.Fprintf(out, "%s [y/N]: ", prompt)
+	_, _ = fmt.Fprintf(out, "%s [y/N]: ", prompt)
 	scanner := bufio.NewScanner(in)
 	if !scanner.Scan() {
 		return false
