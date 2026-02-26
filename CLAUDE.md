@@ -49,7 +49,7 @@ All storage operations go through `internal/storage.Client` interface. This is t
 | `internal/diff` | LCS-based unified diff generation, colored terminal output |
 | `internal/meta` | Object metadata YAML marshal/unmarshal |
 | `internal/contenttype` | MIME type detection from file extensions |
-| `internal/browser` | Interactive file browser for directory URIs |
+| `internal/browser` | Bubbletea TUI file browser with tree navigation and `/` filter |
 | `internal/completion` | Shell completion scripts for bash/zsh/fish |
 
 ### Workflow
@@ -58,7 +58,7 @@ All storage operations go through `internal/storage.Client` interface. This is t
 
 **Metadata edit** (`runMetaEdit`): HeadObject -> YAML marshal -> temp file -> editor -> diff -> confirm -> CopyObject (UpdateMetadata)
 
-**Browser** (`runBrowser`): List objects -> display -> select -> edit (loops back to list)
+**Browser** (`runBrowser`): Bubbletea TUI program. `model` (Elm architecture) handles tree state, cursor, filter. `Browser` struct manages S3 listing and navigation. Edit suspends TUI via `tea.Exec`, resumes after.
 
 ## Code Style
 
@@ -68,9 +68,27 @@ All storage operations go through `internal/storage.Client` interface. This is t
 - Table-driven tests preferred
 - No external test framework — standard `testing` package only
 
+### Browser architecture
+
+The browser package has these files:
+
+| File | Purpose |
+|------|---------|
+| `browser.go` | `Browser` struct, `Run()`, `buildView()`, `loadEntries()`, `goUp()` |
+| `model.go` | Bubbletea `model`, `Update`, `View`, key handling, filter logic, `visibleNodes()` |
+| `icons.go` | File type icon mapping |
+| `styles.go` | Lipgloss style definitions |
+
+Key design notes:
+- `model` uses value receivers (Elm architecture). `context.Context` is stored in the struct because bubbletea `Cmd` closures need it.
+- `navigatedMsg` carries `bucket` to keep `model.bucket` in sync with `Browser.bucket`.
+- Filter applies recursively: expanded directories are shown if any descendant matches.
+
 ## Dependencies
 
 - `github.com/aws/aws-sdk-go-v2` — AWS S3 SDK
+- `github.com/charmbracelet/bubbletea` — TUI framework (Elm architecture)
+- `github.com/charmbracelet/lipgloss` — Terminal styling
 - `github.com/spf13/cobra` — CLI framework
 - `gopkg.in/yaml.v3` — YAML marshaling for metadata
 
