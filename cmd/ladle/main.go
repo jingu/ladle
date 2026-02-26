@@ -358,7 +358,11 @@ func bucketCachePath(profile string) string {
 	if profile == "" {
 		profile = "default"
 	}
-	return filepath.Join(os.Getenv("HOME"), ".cache", "ladle", "buckets_"+profile+".cache")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".cache", "ladle", "buckets_"+profile+".cache")
 }
 
 func loadBucketCache(profile string) ([]string, error) {
