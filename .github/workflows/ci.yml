@@ -4,7 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
@@ -14,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go-version: ["1.23", "1.24"]
+        go-version: ["1.24", "1.25", "1.26"]
     steps:
       - uses: actions/checkout@v4
 
@@ -38,7 +37,8 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          # Match go.mod version; Go 1.26 has smithy-go compatibility issues
+          go-version: "1.25"
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6

@@ -80,8 +80,8 @@ Examples:
 	cmd.Flags().StringVar(&f.installComp, "install-completion", "", "Generate completion script (bash|zsh|fish)")
 	cmd.Flags().BoolVar(&f.completeBucket, "complete-bucket", false, "Internal: complete bucket names")
 	cmd.Flags().BoolVar(&f.completePath, "complete-path", false, "Internal: complete object paths")
-	cmd.Flags().MarkHidden("complete-bucket")
-	cmd.Flags().MarkHidden("complete-path")
+	_ = cmd.Flags().MarkHidden("complete-bucket")
+	_ = cmd.Flags().MarkHidden("complete-path")
 
 	return cmd
 }
@@ -216,7 +216,7 @@ func runFileEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flag
 	// Get existing metadata to preserve it
 	existingMeta, err := client.HeadObject(ctx, u.Bucket, u.Key)
 	if err != nil {
-		// If we can't get metadata, just use content type
+		fmt.Fprintf(os.Stderr, "Warning: could not fetch metadata: %v\n", err)
 		existingMeta = &storage.ObjectMetadata{}
 	}
 	existingMeta.ContentType = ct
