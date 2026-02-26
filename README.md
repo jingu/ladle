@@ -10,6 +10,8 @@
  ▀████▀
 ```
 
+[日本語](README.ja.md)
+
 **Edit S3 files directly from your terminal. One command.**
 
 ```bash

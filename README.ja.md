@@ -1,21 +1,126 @@
-# ladle
+```
+  ██
+  ██
+  ██       _     ____   _      _____
+  ██      / \   |  _ \ | |    | ____|
+  ██     / _ \  | | | || |    |  _|
+  ██    / ___ \ | |_| || |___ | |___
+ ▄██▄  /_/   \_\|____/ |_____||_____|
+██████
+ ▀████▀
+```
 
-クラウドストレージ上のファイルをローカルエディタで直接編集するCLIツール。
+[English](README.md)
 
-S3からファイルをダウンロードし、お好みのエディタで開き、保存・終了すると変更を自動アップロードします。`kubectl edit` のクラウドストレージ版です。
+**S3上のファイルをターミナルから直接編集。コマンド一発。**
 
-## 特徴
+```bash
+ladle s3://mybucket/config.json
+```
 
-- **ファイル編集** - S3オブジェクトのダウンロード・編集・アップロードを1コマンドで
-- **メタデータ編集** - ContentType, CacheControl等のS3メタデータをYAML形式で編集
-- **ファイルブラウザ** - ディレクトリURIを指定するとインタラクティブなファイラーを起動
-- **diff + 確認UI** - アップロード前にカラー付きunified diffを表示し、確認プロンプトを出す
-- **バイナリ検出** - バイナリファイルを開く前に警告を表示
-- **ContentType自動検出** - ファイル拡張子からContent-Typeを自動設定
-- **シェル補完** - bash, zsh, fish向けのTab補完（バケット名・キー名の補完対応）
-- **マルチクラウド対応設計** - GCS, Azure Blob, Cloudflare R2への拡張を見据えたアーキテクチャ
+ダウンロード、エディタで編集、差分確認、アップロード — すべてワンコマンド。
+手動のダウンロード/アップロードも、Webコンソールも、スクリプトも不要。
+
+## なぜ ladle？
+
+- **1コマンドで編集** — `ladle s3://bucket/file` でダウンロード・編集・差分表示・アップロード
+- **メタデータも同様** — `ladle --meta s3://bucket/file` でContentType、CacheControl等をYAMLで編集
+- **好きなエディタで** — vim, VS Code, emacs, nano — `EDITOR` 環境変数か `--editor` で指定
+- **安全設計** — アップロード前にカラー差分 + 確認プロンプト
+- **ブラウズ & フィルタ** — vim風 `/` 検索付きインタラクティブTUIブラウザ
+
+## 操作イメージ
+
+### ファイルを編集
+
+```
+$ ladle s3://myapp/config.json
+Downloading s3://myapp/config.json ...
+Temp file: /tmp/ladle-123/config.json
+
+  （エディタが開き、変更して保存・終了）
+
+File: s3://myapp/config.json
+
+--- original
++++ modified
+@@ -1,3 +1,3 @@
+ {
+-  "debug": false,
++  "debug": true,
+   "port": 8080
+ }
+
+Upload changes? [y/N]: y
+Uploading to s3://myapp/config.json ...
+Done.
+```
+
+### メタデータを編集
+
+```
+$ ladle --meta s3://myapp/index.html
+Fetching metadata for s3://myapp/index.html ...
+
+  （エディタがYAML形式で開く）
+
+# s3://myapp/index.html
+ContentType: text/html
+CacheControl: max-age=3600
+Metadata:
+  author: alice
+
+  （CacheControlを変更して保存・終了）
+
+--- original
++++ modified
+@@ -2,3 +2,3 @@
+ ContentType: text/html
+-CacheControl: max-age=3600
++CacheControl: max-age=86400
+ Metadata:
+
+Update metadata? [y/N]: y
+Done.
+```
+
+メタデータの更新にはS3 CopyObject APIを使用 — ファイル本体の再アップロードは不要。
+
+### ファイルをブラウズ
+
+```
+$ ladle s3://myapp/
+
+      ██  _   ___  _    ____
+     ██  /_\ | _ \| |  | __|
+  ▄▄██▄ / _ \| | || |__| _|
+  ██████_/ \_\___/|____|____|
+   ▀██▀  v1.0.0
+
+  s3://myapp
+
+> 📁 config/
+  📁 static/
+  📝 index.html              2.1 KB  2026-02-19 02:08
+  📝 readme.md               1.3 KB  2026-02-19 02:08
+  ..
+
+  / index▏
+  ↑/↓ navigate  ←/→ collapse/expand  enter select  - up  / filter  esc×2 quit
+```
+
+- `↑/↓` で移動、`←/→` でディレクトリの展開/折りたたみ
+- `/` でフィルタ — 展開済みツリー全体をインクリメンタル検索
+- `Enter` でファイルを編集、完了後ブラウザに戻る
+- `-` で上のディレクトリへ
 
 ## インストール
+
+### Homebrew
+
+```bash
+brew install jingu/tap/ladle
+```
 
 ### ソースから
 
@@ -27,51 +132,7 @@ go install github.com/jingu/ladle/cmd/ladle@latest
 
 [Releases](https://github.com/jingu/ladle/releases)からお使いのプラットフォーム用バイナリをダウンロードしてください。
 
-## 使い方
-
-### ファイルを編集する
-
-```bash
-ladle s3://mybucket/path/to/file.html
-```
-
-実行すると以下の流れで処理されます:
-1. ファイルを一時ディレクトリにダウンロード
-2. エディタで開く
-3. 変更のdiffを表示
-4. アップロードの確認を求める
-
-### メタデータを編集する
-
-```bash
-ladle --meta s3://mybucket/path/to/file.html
-```
-
-オブジェクトのメタデータがYAML形式でエディタに表示されます:
-
-```yaml
-# s3://mybucket/path/to/file.html
-ContentType: text/html
-CacheControl: max-age=3600
-ContentEncoding: ""
-ContentDisposition: ""
-Metadata:
-  author: yoshitaka
-  version: "1.0"
-```
-
-メタデータの更新にはS3 CopyObject APIを使用し、ファイル本体の再アップロードを避けてコストを最適化しています。
-
-### ファイルをブラウズする
-
-```bash
-ladle s3://mybucket/path/to/     # ディレクトリを閲覧
-ladle s3://mybucket/              # バケットルートを閲覧
-```
-
-`/` で終わるパスを指定すると、インタラクティブなファイルブラウザが起動します。ファイルを選択して編集し、編集完了後はブラウザに戻って別のファイルを続けて編集できます。
-
-### AWSオプション
+## AWSオプション
 
 ```bash
 ladle --profile production s3://bucket/file.html
@@ -118,37 +179,12 @@ ladle --install-completion zsh >> ~/.zshrc
 ladle --install-completion fish > ~/.config/fish/completions/ladle.fish
 ```
 
-補完でサポートされる項目:
-- バケット名の補完
-- オブジェクトキーの補完（Tab押下時にS3 APIから取得）
-- フラグの補完
-
-## プロジェクト構成
-
-```
-ladle/
-├── cmd/ladle/          # CLIエントリポイント
-├── internal/
-│   ├── uri/            # クラウドストレージURI解析 (s3://, gs://, az://, r2://)
-│   ├── storage/        # ストレージクライアントインターフェース + モック
-│   │   └── s3client/   # AWS S3実装
-│   ├── editor/         # エディタ起動、一時ファイル管理、バイナリ検出
-│   ├── diff/           # unified diff生成・カラー表示
-│   ├── meta/           # メタデータYAMLシリアライズ
-│   ├── contenttype/    # ファイル拡張子からのMIME type推定
-│   ├── browser/        # インタラクティブファイルブラウザ
-│   └── completion/     # シェル補完スクリプト (bash/zsh/fish)
-├── go.mod
-└── go.sum
-```
-
 ## 今後の予定
 
 - GCS (`gs://`), Azure Blob (`az://`), Cloudflare R2 (`r2://`) バックエンド
 - `--version-id` によるS3バージョニング対応
 - 複数ファイルの一括編集
 - `ladle compare` による2ファイルのリモートdiff
-- Homebrew tap
 
 ## ライセンス
 
