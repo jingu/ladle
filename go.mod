@@ -1,6 +1,6 @@
 module github.com/jingu/ladle
 
-go 1.24.7
+go 1.24
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.41.2
@@ -28,5 +28,5 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sts v1.41.7 // indirect
 	github.com/aws/smithy-go v1.24.1 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
-	github.com/spf13/pflag v1.0.9 // indirect
+	github.com/spf13/pflag v1.0.10 // indirect
 )
