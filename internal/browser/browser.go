@@ -88,10 +88,10 @@ func (b *Browser) Run(ctx context.Context) (*Selection, error) {
 	if err != nil {
 		return nil, fmt.Errorf("setting terminal raw mode: %w", err)
 	}
-	defer term.Restore(b.fd, oldState)
+	defer func() { _ = term.Restore(b.fd, oldState) }()
 
-	fmt.Fprint(b.out, ansiAltScreenOn+ansiHideCursor)
-	defer fmt.Fprint(b.out, ansiShowCursor+ansiAltScreenOff)
+	_, _ = fmt.Fprint(b.out, ansiAltScreenOn+ansiHideCursor)
+	defer func() { _, _ = fmt.Fprint(b.out, ansiShowCursor+ansiAltScreenOff) }()
 
 	cursor := 0
 	for {
@@ -298,25 +298,29 @@ func filterIndices(items []item, filter string) []int {
 	return idx
 }
 
+// w writes a formatted string to the browser output, discarding errors.
+func (b *Browser) w(format string, a ...any) {
+	_, _ = fmt.Fprintf(b.out, format, a...)
+}
+
 func (b *Browser) renderFiltered(items []item, visible []int, cursor int, filter string, filtering bool) {
-	fmt.Fprint(b.out, ansiHome+ansiClearScreen)
+	b.w("%s%s", ansiHome, ansiClearScreen)
 
 	// Header
 	p := b.prefix
 	if p == "" {
 		p = "/"
 	}
-	fmt.Fprintf(b.out, "\r\n  %s%s%s://%s/%s%s\r\n",
-		ansiBold, ansiCyan, b.scheme, b.bucket, p, ansiReset)
+	b.w("\r\n  %s%s%s://%s/%s%s\r\n", ansiBold, ansiCyan, b.scheme, b.bucket, p, ansiReset)
 
 	// Filter bar
 	if filtering {
-		fmt.Fprintf(b.out, "  %s/%s %s%s\u2588%s\r\n", ansiYellow, ansiReset, filter, ansiDim, ansiReset)
+		b.w("  %s/%s %s%s\u2588%s\r\n", ansiYellow, ansiReset, filter, ansiDim, ansiReset)
 	} else if filter != "" {
-		fmt.Fprintf(b.out, "  %s/ %s%s\r\n", ansiDim, filter, ansiReset)
+		b.w("  %s/ %s%s\r\n", ansiDim, filter, ansiReset)
 	}
 
-	fmt.Fprint(b.out, "\r\n")
+	b.w("\r\n")
 
 	// Check if there are any non-nav visible items
 	hasContent := false
@@ -328,9 +332,9 @@ func (b *Browser) renderFiltered(items []item, visible []int, cursor int, filter
 	}
 	if !hasContent {
 		if filter != "" {
-			fmt.Fprintf(b.out, "    %s(no matches)%s\r\n", ansiDim, ansiReset)
+			b.w("    %s(no matches)%s\r\n", ansiDim, ansiReset)
 		} else {
-			fmt.Fprintf(b.out, "    %s(empty)%s\r\n", ansiDim, ansiReset)
+			b.w("    %s(empty)%s\r\n", ansiDim, ansiReset)
 		}
 	}
 
@@ -348,36 +352,34 @@ func (b *Browser) renderFiltered(items []item, visible []int, cursor int, filter
 
 	// Help line
 	if filtering {
-		fmt.Fprintf(b.out, "\r\n  %stype to filter    Esc clear    Enter done%s\r\n",
-			ansiDim, ansiReset)
+		b.w("\r\n  %stype to filter    Esc clear    Enter done%s\r\n", ansiDim, ansiReset)
 	} else {
-		fmt.Fprintf(b.out, "\r\n  %s\u2191\u2193/jk navigate    Enter select    / filter    q quit%s\r\n",
-			ansiDim, ansiReset)
+		b.w("\r\n  %s\u2191\u2193/jk navigate    Enter select    / filter    q quit%s\r\n", ansiDim, ansiReset)
 	}
 }
 
 func (b *Browser) renderNav(it item, selected bool) {
 	if selected {
-		fmt.Fprintf(b.out, "  %s \u25b8 %s %s\r\n", ansiReverse, it.label, ansiReset)
+		b.w("  %s \u25b8 %s %s\r\n", ansiReverse, it.label, ansiReset)
 	} else {
-		fmt.Fprintf(b.out, "    %s%s%s\r\n", ansiGray, it.label, ansiReset)
+		b.w("    %s%s%s\r\n", ansiGray, it.label, ansiReset)
 	}
 }
 
 func (b *Browser) renderDir(it item, selected bool) {
 	if selected {
-		fmt.Fprintf(b.out, "  %s \u25b8 %s %s\r\n", ansiReverse, it.label, ansiReset)
+		b.w("  %s \u25b8 %s %s\r\n", ansiReverse, it.label, ansiReset)
 	} else {
-		fmt.Fprintf(b.out, "    %s%s%s%s\r\n", ansiBold, ansiBlue, it.label, ansiReset)
+		b.w("    %s%s%s%s\r\n", ansiBold, ansiBlue, it.label, ansiReset)
 	}
 }
 
 func (b *Browser) renderFile(it item, selected bool) {
 	size := formatSize(it.entry.Size)
 	if selected {
-		fmt.Fprintf(b.out, "  %s \u25b8 %-30s  %s %s\r\n", ansiReverse, it.label, size, ansiReset)
+		b.w("  %s \u25b8 %-30s  %s %s\r\n", ansiReverse, it.label, size, ansiReset)
 	} else {
-		fmt.Fprintf(b.out, "    %-30s  %s%s%s\r\n", it.label, ansiDim, size, ansiReset)
+		b.w("    %-30s  %s%s%s\r\n", it.label, ansiDim, size, ansiReset)
 	}
 }
 
