@@ -16,6 +16,7 @@ type Spinner struct {
 	w       io.Writer
 	message string
 	done    chan struct{}
+	stopped chan struct{}
 	mu      sync.Mutex
 	running bool
 }
@@ -26,6 +27,7 @@ func New(w io.Writer, message string) *Spinner {
 		w:       w,
 		message: message,
 		done:    make(chan struct{}),
+		stopped: make(chan struct{}),
 	}
 }
 
@@ -42,6 +44,7 @@ func (s *Spinner) Start() {
 	go func() {
 		ticker := time.NewTicker(80 * time.Millisecond)
 		defer ticker.Stop()
+		defer close(s.stopped)
 
 		i := 0
 		for {
@@ -59,23 +62,31 @@ func (s *Spinner) Start() {
 // Stop stops the spinner and clears the line.
 func (s *Spinner) Stop() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if !s.running {
+		s.mu.Unlock()
 		return
 	}
 	s.running = false
 	close(s.done)
+	s.mu.Unlock()
+
+	// Wait for the goroutine to finish before writing to avoid data race.
+	<-s.stopped
 	fmt.Fprintf(s.w, "\r\033[K")
 }
 
 // StopWithMessage stops the spinner and replaces it with a final message.
 func (s *Spinner) StopWithMessage(msg string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if !s.running {
+		s.mu.Unlock()
 		return
 	}
 	s.running = false
 	close(s.done)
+	s.mu.Unlock()
+
+	// Wait for the goroutine to finish before writing to avoid data race.
+	<-s.stopped
 	fmt.Fprintf(s.w, "\r\033[K%s\n", msg)
 }
