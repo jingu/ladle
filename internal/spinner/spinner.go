@@ -52,7 +52,7 @@ func (s *Spinner) Start() {
 			case <-s.done:
 				return
 			case <-ticker.C:
-				fmt.Fprintf(s.w, "\r\033[K%s %s", frames[i%len(frames)], s.message)
+				_, _ = fmt.Fprintf(s.w, "\r\033[K%s %s", frames[i%len(frames)], s.message)
 				i++
 			}
 		}
@@ -72,7 +72,7 @@ func (s *Spinner) Stop() {
 
 	// Wait for the goroutine to finish before writing to avoid data race.
 	<-s.stopped
-	fmt.Fprintf(s.w, "\r\033[K")
+	_, _ = fmt.Fprintf(s.w, "\r\033[K")
 }
 
 // StopWithMessage stops the spinner and replaces it with a final message.
@@ -88,5 +88,5 @@ func (s *Spinner) StopWithMessage(msg string) {
 
 	// Wait for the goroutine to finish before writing to avoid data race.
 	<-s.stopped
-	fmt.Fprintf(s.w, "\r\033[K%s\n", msg)
+	_, _ = fmt.Fprintf(s.w, "\r\033[K%s\n", msg)
 }
