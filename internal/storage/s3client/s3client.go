@@ -69,7 +69,7 @@ func (c *S3Client) Download(ctx context.Context, bucket, key string, w io.Writer
 	if err != nil {
 		return fmt.Errorf("downloading s3://%s/%s: %w", bucket, key, err)
 	}
-	defer out.Body.Close()
+	defer func() { _ = out.Body.Close() }()
 
 	if _, err := io.Copy(w, out.Body); err != nil {
 		return fmt.Errorf("reading s3://%s/%s: %w", bucket, key, err)
