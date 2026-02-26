@@ -138,10 +138,6 @@ func (b *Browser) runLoop(ctx context.Context) (*Selection, error) {
 		}
 
 		items := b.buildItems(entries)
-		if len(items) == 0 {
-			return &Selection{Action: ActionQuit}, nil
-		}
-
 		if cursor >= len(items) {
 			cursor = len(items) - 1
 		}
@@ -348,12 +344,12 @@ func (b *Browser) expandDir(ctx context.Context, items []item, visible []int, cu
 		return items, visible, cursor
 	}
 	it := items[visible[cursor]]
-	if it.isDir && !it.isNav && !b.expanded[it.entry.Key] {
+	if it.isDir && !it.isNav && it.entry.Key != "" && !b.expanded[it.entry.Key] {
 		children, err := b.client.List(ctx, b.bucket, it.entry.Key, "/")
 		if err == nil {
 			b.childCache[it.entry.Key] = children
 			b.expanded[it.entry.Key] = true
-			items = b.rebuildItems(ctx)
+			items = b.rebuildItems(ctx, items)
 			visible = filterIndices(items, filter)
 			if cursor >= len(visible) {
 				cursor = len(visible) - 1
@@ -371,7 +367,7 @@ func (b *Browser) collapseDir(ctx context.Context, items []item, visible []int, 
 	it := items[visible[cursor]]
 	if it.isDir && !it.isNav && b.expanded[it.entry.Key] {
 		delete(b.expanded, it.entry.Key)
-		items = b.rebuildItems(ctx)
+		items = b.rebuildItems(ctx, items)
 		visible = filterIndices(items, filter)
 		if cursor >= len(visible) {
 			cursor = len(visible) - 1
@@ -383,10 +379,11 @@ func (b *Browser) collapseDir(ctx context.Context, items []item, visible []int, 
 }
 
 // rebuildItems rebuilds the flat item list from current entries, using the current expansion state.
-func (b *Browser) rebuildItems(ctx context.Context) []item {
+// On error, it returns fallback unchanged.
+func (b *Browser) rebuildItems(ctx context.Context, fallback []item) []item {
 	entries, err := b.client.List(ctx, b.bucket, b.prefix, "/")
 	if err != nil {
-		return nil
+		return fallback
 	}
 	return b.buildItems(entries)
 }
@@ -489,10 +486,10 @@ func (b *Browser) renderFiltered(items []item, visible []int, cursor int, filter
 
 	total := len(visible)
 
-	// Reserve 2 lines for scroll indicators when list exceeds viewport
+	// First pass: reserve 1 line for bottom indicator if scrolling is needed
 	itemRows := maxRows
 	if total > maxRows {
-		itemRows = maxRows - 2
+		itemRows = maxRows - 1 // at minimum we need "more below"
 		if itemRows < 1 {
 			itemRows = 1
 		}
@@ -510,6 +507,15 @@ func (b *Browser) renderFiltered(items []item, visible []int, cursor int, filter
 	}
 	if *scrollOffset < 0 {
 		*scrollOffset = 0
+	}
+
+	// Second pass: if "more above" indicator is needed, reserve one more line
+	if *scrollOffset > 0 && itemRows > 1 {
+		itemRows--
+		// Re-adjust scrollOffset with reduced itemRows
+		if cursor >= *scrollOffset+itemRows {
+			*scrollOffset = cursor - itemRows + 1
+		}
 	}
 
 	end := *scrollOffset + itemRows

@@ -912,6 +912,124 @@ func TestScrollViewport(t *testing.T) {
 	}
 }
 
+// errListClient is a storage.Client that always returns an error on List.
+type errListClient struct {
+	storage.Client
+}
+
+func (e *errListClient) List(_ context.Context, _, _, _ string) ([]storage.ListEntry, error) {
+	return nil, fmt.Errorf("simulated list error")
+}
+
+func TestRebuildItemsErrorPreservesFallback(t *testing.T) {
+	b := &Browser{
+		client:     &errListClient{},
+		bucket:     "b",
+		prefix:     "",
+		expanded:   make(map[string]bool),
+		childCache: make(map[string][]storage.ListEntry),
+	}
+	fallback := []item{
+		{label: "file.txt"},
+		{label: "quit", isNav: true, navID: "quit"},
+	}
+	got := b.rebuildItems(context.Background(), fallback)
+	if len(got) != len(fallback) {
+		t.Fatalf("expected fallback length %d, got %d", len(fallback), len(got))
+	}
+	if got[0].label != "file.txt" {
+		t.Errorf("expected fallback item, got %q", got[0].label)
+	}
+}
+
+func TestExpandDirAlreadyExpanded(t *testing.T) {
+	mock := storage.NewMockClient()
+	mock.PutObject("mybucket", "dir/file.txt", []byte("hello"), nil)
+
+	b, _ := newTestBrowser(mock, "mybucket", "", false, "")
+	b.expanded["dir/"] = true
+	b.childCache["dir/"] = []storage.ListEntry{
+		{Key: "dir/file.txt", Size: 5},
+	}
+
+	entries := []storage.ListEntry{
+		{Key: "dir/", IsDir: true},
+		{Key: "readme.txt", Size: 100},
+	}
+	items := b.buildItems(entries)
+	visible := allIndices(len(items))
+
+	// expandDir on already-expanded dir should be a no-op
+	newItems, newVisible, newCursor := b.expandDir(context.Background(), items, visible, 0, "")
+	if len(newItems) != len(items) {
+		t.Errorf("expected same item count %d, got %d", len(items), len(newItems))
+	}
+	if len(newVisible) != len(visible) {
+		t.Errorf("expected same visible count %d, got %d", len(visible), len(newVisible))
+	}
+	if newCursor != 0 {
+		t.Errorf("expected cursor 0, got %d", newCursor)
+	}
+}
+
+func TestExpandDirWithFilter(t *testing.T) {
+	mock := storage.NewMockClient()
+	mock.PutObject("mybucket", "dir/match.txt", []byte("hello"), nil)
+
+	b, _ := newTestBrowser(mock, "mybucket", "", false, "")
+
+	entries := []storage.ListEntry{
+		{Key: "dir/", IsDir: true},
+		{Key: "other.txt", Size: 100},
+	}
+	items := b.buildItems(entries)
+	visible := filterIndices(items, "dir")
+
+	// Expand dir/ with filter "dir" active
+	newItems, newVisible, _ := b.expandDir(context.Background(), items, visible, 0, "dir")
+	if !b.expanded["dir/"] {
+		t.Fatal("expected dir/ to be expanded")
+	}
+	// After expand, the child "match.txt" won't match "dir" filter,
+	// but dir/ still should be visible
+	found := false
+	for _, vi := range newVisible {
+		if newItems[vi].label == "dir/" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected dir/ to remain in filtered view")
+	}
+}
+
+func TestScrollOffsetPreservation(t *testing.T) {
+	var items []item
+	for i := 0; i < 10; i++ {
+		items = append(items, item{label: fmt.Sprintf("file%d.txt", i)})
+	}
+	items = append(items, item{label: "quit", isNav: true, navID: "quit"})
+
+	b, out := newTestBrowser(nil, "b", "", false, "")
+	b.heightOverride = 10
+
+	// First render: cursor at 8, should scroll down
+	off := 0
+	b.renderFiltered(items, allIndices(len(items)), 8, "", false, &off)
+	if off == 0 {
+		t.Fatal("expected scrollOffset to be adjusted from 0")
+	}
+	savedOff := off
+
+	// Second render: cursor stays at 8, scrollOffset should be preserved
+	out.Reset()
+	b.renderFiltered(items, allIndices(len(items)), 8, "", false, &off)
+	if off != savedOff {
+		t.Errorf("expected scrollOffset preserved at %d, got %d", savedOff, off)
+	}
+}
+
 func TestComputeTreePrefixesNested(t *testing.T) {
 	// Simulates:
 	//   └── ▼ a/
