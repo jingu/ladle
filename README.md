@@ -1,19 +1,116 @@
-# ladle
+```
+  ██
+  ██
+  ██       _     ____   _      _____
+  ██      / \   |  _ \ | |    | ____|
+  ██     / _ \  | | | || |    |  _|
+  ██    / ___ \ | |_| || |___ | |___
+ ▄██▄  /_/   \_\|____/ |_____||_____|
+██████
+ ▀████▀
+```
 
-Edit cloud storage files with your local editor.
+**Edit S3 files directly from your terminal. One command.**
 
-ladle downloads a file from S3 (or other cloud storage), opens it in your preferred editor, and uploads the changes back when you save and close. It's like `kubectl edit` but for cloud storage objects.
+```bash
+ladle s3://mybucket/config.json
+```
 
-## Features
+Download, edit in your favorite editor, diff, confirm, upload — all in one shot.
+No manual download/upload, no web console, no scripts.
 
-- **File editing** - Download, edit, and upload S3 objects in one command
-- **Metadata editing** - Edit S3 object metadata (ContentType, CacheControl, etc.) as YAML
-- **File browser** - Interactive file browser when given a directory URI
-- **Diff + confirm** - Shows a colored unified diff before uploading, with confirmation prompt
-- **Binary detection** - Warns before opening binary files
-- **Content-Type detection** - Automatically sets Content-Type based on file extension
-- **Shell completion** - Tab completion for bash, zsh, and fish (including bucket/key completion)
-- **Multi-cloud ready** - Architecture supports future GCS, Azure Blob, and Cloudflare R2 backends
+## Why ladle?
+
+- **One command to edit** — `ladle s3://bucket/file` opens, edits, diffs, and uploads
+- **Metadata too** — `ladle --meta s3://bucket/file` edits ContentType, CacheControl, etc. as YAML
+- **Any editor** — vim, VS Code, emacs, nano — set `EDITOR` or `--editor`
+- **Safe by default** — colored diff + confirmation before every upload
+- **Browse & filter** — interactive TUI browser with vim-style `/` search
+
+## Quick Examples
+
+### Edit a file
+
+```
+$ ladle s3://myapp/config.json
+Downloading s3://myapp/config.json ...
+Temp file: /tmp/ladle-123/config.json
+
+  (your editor opens, you make changes, save and close)
+
+File: s3://myapp/config.json
+
+--- original
++++ modified
+@@ -1,3 +1,3 @@
+ {
+-  "debug": false,
++  "debug": true,
+   "port": 8080
+ }
+
+Upload changes? [y/N]: y
+Uploading to s3://myapp/config.json ...
+Done.
+```
+
+### Edit metadata
+
+```
+$ ladle --meta s3://myapp/index.html
+Fetching metadata for s3://myapp/index.html ...
+
+  (editor opens with YAML)
+
+# s3://myapp/index.html
+ContentType: text/html
+CacheControl: max-age=3600
+Metadata:
+  author: alice
+
+  (change CacheControl, save and close)
+
+--- original
++++ modified
+@@ -2,3 +2,3 @@
+ ContentType: text/html
+-CacheControl: max-age=3600
++CacheControl: max-age=86400
+ Metadata:
+
+Update metadata? [y/N]: y
+Done.
+```
+
+Metadata updates use the S3 CopyObject API — no re-upload of file content.
+
+### Browse files
+
+```
+$ ladle s3://myapp/
+
+      ██  _   ___  _    ____
+     ██  /_\ | _ \| |  | __|
+  ▄▄██▄ / _ \| | || |__| _|
+  ██████_/ \_\___/|____|____|
+   ▀██▀  v1.0.0
+
+  s3://myapp
+
+> 📁 config/
+  📁 static/
+  📝 index.html              2.1 KB  2026-02-19 02:08
+  📝 readme.md               1.3 KB  2026-02-19 02:08
+  ..
+
+  / index▏
+  ↑/↓ navigate  ←/→ collapse/expand  enter select  - up  / filter  esc×2 quit
+```
+
+- `↑/↓` navigate, `←/→` expand/collapse directories
+- `/` to filter — incremental search across expanded tree
+- `Enter` to edit a file, then return to the browser
+- `-` to go up a directory
 
 ## Installation
 
@@ -33,51 +130,7 @@ go install github.com/jingu/ladle/cmd/ladle@latest
 
 Download the binary for your platform from [Releases](https://github.com/jingu/ladle/releases).
 
-## Usage
-
-### Edit a file
-
-```bash
-ladle s3://mybucket/path/to/file.html
-```
-
-This will:
-1. Download the file to a temp directory
-2. Open it in your editor
-3. Show a diff of your changes
-4. Ask for confirmation before uploading
-
-### Edit metadata
-
-```bash
-ladle --meta s3://mybucket/path/to/file.html
-```
-
-Opens the object's metadata as YAML:
-
-```yaml
-# s3://mybucket/path/to/file.html
-ContentType: text/html
-CacheControl: max-age=3600
-ContentEncoding: ""
-ContentDisposition: ""
-Metadata:
-  author: yoshitaka
-  version: "1.0"
-```
-
-Metadata updates use the S3 CopyObject API for cost optimization (no re-upload of file content).
-
-### Browse files
-
-```bash
-ladle s3://mybucket/path/to/     # browse a directory
-ladle s3://mybucket/              # browse bucket root
-```
-
-When given a path ending with `/`, ladle launches an interactive file browser. Select a file to edit it, then return to the browser to continue editing other files.
-
-### AWS options
+## AWS Options
 
 ```bash
 ladle --profile production s3://bucket/file.html
@@ -124,37 +177,12 @@ ladle --install-completion zsh >> ~/.zshrc
 ladle --install-completion fish > ~/.config/fish/completions/ladle.fish
 ```
 
-Completion supports:
-- Bucket name completion
-- Object key completion (fetches from S3 API on Tab)
-- Flag completion
-
-## Project Structure
-
-```
-ladle/
-├── cmd/ladle/          # CLI entrypoint
-├── internal/
-│   ├── uri/            # Cloud storage URI parsing (s3://, gs://, az://, r2://)
-│   ├── storage/        # Storage client interface + mock
-│   │   └── s3client/   # AWS S3 implementation
-│   ├── editor/         # Editor launching, temp file management, binary detection
-│   ├── diff/           # Unified diff generation and colored output
-│   ├── meta/           # Metadata YAML serialization
-│   ├── contenttype/    # MIME type detection from file extensions
-│   ├── browser/        # Interactive file browser
-│   └── completion/     # Shell completion scripts (bash/zsh/fish)
-├── go.mod
-└── go.sum
-```
-
 ## Future Plans
 
 - GCS (`gs://`), Azure Blob (`az://`), Cloudflare R2 (`r2://`) backends
 - `--version-id` for S3 versioned objects
 - Multi-file batch editing
 - `ladle compare` for diffing two remote files
-
 
 ## License
 
