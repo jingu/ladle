@@ -14,19 +14,19 @@ import (
 )
 
 // EditFunc is called when a file is selected for editing.
-// It receives the parsed URI and should perform the edit workflow.
-type EditFunc func(u *uri.URI) error
+// It receives the parsed URI and returns a status message and error.
+type EditFunc func(u *uri.URI) (string, error)
 
 // EditMetaFunc is called to edit object metadata.
-type EditMetaFunc func(u *uri.URI) error
+type EditMetaFunc func(u *uri.URI) (string, error)
 
 // DownloadFunc is called to download a file to a local directory.
 // It receives the parsed URI and a local directory path.
-type DownloadFunc func(u *uri.URI, dir string) error
+type DownloadFunc func(u *uri.URI, dir string) (string, error)
 
 // RestoreVersionFunc is called to restore a specific version of an object.
 // It receives the parsed URI and the version ID to restore.
-type RestoreVersionFunc func(u *uri.URI, versionID string) error
+type RestoreVersionFunc func(u *uri.URI, versionID string) (string, error)
 
 // Browser provides an interactive file browser.
 type Browser struct {

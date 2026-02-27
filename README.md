@@ -189,6 +189,31 @@ View and restore previous versions of S3 objects (requires S3 versioning enabled
 ladle --versions s3://myapp/config.json
 ```
 
+```
+      ██  _   ___  _    ____
+     ██  /_\ | _ \| |  | __|
+  ▄▄██▄ / _ \| | || |__| _|
+  ██████_/ \_\___/|____|____|
+   ▀██▀  v1.0.0
+
+  s3://myapp
+
+  ╭──────────────────────────────────────╮  ╭──────────────────────────────────╮
+  │ Versions: config.json                │  │ Preview                          │
+  │ > aB3dE6fG7h1i  2026-02-27 10:30    │  │ {                                │
+  │       812 B  (current)               │  │   "debug": true,                 │
+  │   kL9mN0pQ2r3s  2026-02-26 14:15    │  │   "port": 8080,                  │
+  │       795 B                          │  │   "host": "0.0.0.0"              │
+  │   tU4vW5xY6z7a  2026-02-25 09:00    │  │ }                                │
+  │       780 B                          │  │                                  │
+  │                                      │  │                                  │
+  │                                      │  │                                  │
+  │                                      │  │                                  │
+  ╰──────────────────────────────────────╯  ╰──────────────────────────────────╯
+
+  ↑/↓ navigate  enter restore  ctrl-d/u scroll preview  esc back  esc×2 quit
+```
+
 The version view shows a list of versions on the left with a content preview on the right. Use `↑/↓` to navigate versions, `Ctrl-d/Ctrl-u` to scroll the preview, and `Enter` to restore a selected version.
 
 You can also access version history from the browser's context menu by selecting **Versions** on any file.
