@@ -202,9 +202,11 @@ func run(cmd *cobra.Command, args []string, f *flags) error {
 
 	// File editing (interactive)
 	if f.meta {
-		return runMetaEdit(ctx, client, u, f)
+		_, err = runMetaEdit(ctx, client, u, f)
+		return err
 	}
-	return runFileEdit(ctx, client, u, f)
+	_, err = runFileEdit(ctx, client, u, f)
+	return err
 }
 
 func newClient(ctx context.Context, u *uri.URI, f *flags) (storage.Client, error) {
@@ -221,14 +223,14 @@ func newClient(ctx context.Context, u *uri.URI, f *flags) (storage.Client, error
 	}
 }
 
-func runFileEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flags) error {
+func runFileEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flags) (string, error) {
 	// Download file
 	var buf strings.Builder
 	sp := spinner.New(os.Stderr, fmt.Sprintf("Downloading %s ...", u))
 	sp.Start()
 	if err := client.Download(ctx, u.Bucket, u.Key, &buf); err != nil {
 		sp.Stop()
-		return err
+		return "", err
 	}
 	sp.StopWithMessage(fmt.Sprintf("✓ Downloaded %s", u))
 	original := buf.String()
@@ -237,14 +239,14 @@ func runFileEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flag
 	if editor.IsBinary([]byte(original)) && !f.force {
 		fmt.Fprintf(os.Stderr, "Warning: %s appears to be a binary file.\n", u)
 		fmt.Fprintf(os.Stderr, "Use --force to edit anyway.\n")
-		return fmt.Errorf("binary file detected")
+		return "", fmt.Errorf("binary file detected")
 	}
 
 	// Create temp file
 	filename := filepath.Base(u.Key)
 	tmpPath, err := editor.TempFile(filename, []byte(original))
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	// Crash recovery: print temp path on interrupt
@@ -254,13 +256,13 @@ func runFileEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flag
 	editorCmd := editor.ResolveEditor(f.editorCmd)
 	if err := editor.Open(editorCmd, tmpPath); err != nil {
 		fmt.Fprintf(os.Stderr, "Recovery: your edits are saved at %s\n", tmpPath)
-		return err
+		return "", err
 	}
 
 	// Read modified content
 	modifiedBytes, err := os.ReadFile(tmpPath)
 	if err != nil {
-		return fmt.Errorf("reading modified file: %w", err)
+		return "", fmt.Errorf("reading modified file: %w", err)
 	}
 	modified := string(modifiedBytes)
 
@@ -270,8 +272,9 @@ func runFileEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flag
 	// Check for changes
 	diffText := diff.Generate(original, modified, "original", "modified")
 	if diffText == "" {
-		fmt.Fprintln(os.Stderr, "No changes detected. Skipping upload.")
-		return nil
+		msg := "No changes detected. Skipping upload."
+		fmt.Fprintln(os.Stderr, msg)
+		return msg, nil
 	}
 
 	// Show diff
@@ -279,15 +282,17 @@ func runFileEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flag
 	diff.Print(os.Stderr, diffText)
 
 	if f.dryRun {
-		fmt.Fprintln(os.Stderr, "\n(dry-run: upload skipped)")
-		return nil
+		msg := "(dry-run: upload skipped)"
+		fmt.Fprintln(os.Stderr, "\n"+msg)
+		return msg, nil
 	}
 
 	// Confirm
 	if !f.yes {
 		if !confirm(os.Stdin, os.Stderr, "Upload changes?") {
-			fmt.Fprintln(os.Stderr, "Upload cancelled.")
-			return nil
+			msg := "Upload cancelled."
+			fmt.Fprintln(os.Stderr, msg)
+			return msg, nil
 		}
 	}
 
@@ -307,34 +312,35 @@ func runFileEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flag
 	sp.Start()
 	if err := client.Upload(ctx, u.Bucket, u.Key, strings.NewReader(modified), existingMeta); err != nil {
 		sp.Stop()
-		return err
+		return "", err
 	}
-	sp.StopWithMessage(fmt.Sprintf("✓ Uploaded to %s", u))
-	return nil
+	msg := fmt.Sprintf("✓ Uploaded to %s", u)
+	sp.StopWithMessage(msg)
+	return msg, nil
 }
 
-func runMetaEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flags) error {
+func runMetaEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flags) (string, error) {
 	// Fetch metadata
 	sp := spinner.New(os.Stderr, fmt.Sprintf("Fetching metadata for %s ...", u))
 	sp.Start()
 	objMeta, err := client.HeadObject(ctx, u.Bucket, u.Key)
 	if err != nil {
 		sp.Stop()
-		return err
+		return "", err
 	}
 	sp.StopWithMessage(fmt.Sprintf("✓ Fetched metadata for %s", u))
 
 	// Marshal to YAML
 	originalYAML, err := meta.Marshal(u.String(), objMeta)
 	if err != nil {
-		return err
+		return "", err
 	}
 	originalStr := string(originalYAML)
 
 	// Create temp file
 	tmpPath, err := editor.TempFile("metadata.yaml", originalYAML)
 	if err != nil {
-		return err
+		return "", err
 	}
 	fmt.Fprintf(os.Stderr, "Temp file: %s\n", tmpPath)
 
@@ -342,13 +348,13 @@ func runMetaEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flag
 	editorCmd := editor.ResolveEditor(f.editorCmd)
 	if err := editor.Open(editorCmd, tmpPath); err != nil {
 		fmt.Fprintf(os.Stderr, "Recovery: your edits are saved at %s\n", tmpPath)
-		return err
+		return "", err
 	}
 
 	// Read modified content
 	modifiedBytes, err := os.ReadFile(tmpPath)
 	if err != nil {
-		return fmt.Errorf("reading modified file: %w", err)
+		return "", fmt.Errorf("reading modified file: %w", err)
 	}
 	modifiedStr := string(modifiedBytes)
 
@@ -357,8 +363,9 @@ func runMetaEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flag
 	// Check for changes
 	diffText := diff.Generate(originalStr, modifiedStr, "original", "modified")
 	if diffText == "" {
-		fmt.Fprintln(os.Stderr, "No changes detected. Skipping update.")
-		return nil
+		msg := "No changes detected. Skipping update."
+		fmt.Fprintln(os.Stderr, msg)
+		return msg, nil
 	}
 
 	// Show diff
@@ -366,22 +373,24 @@ func runMetaEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flag
 	diff.Print(os.Stderr, diffText)
 
 	if f.dryRun {
-		fmt.Fprintln(os.Stderr, "\n(dry-run: update skipped)")
-		return nil
+		msg := "(dry-run: update skipped)"
+		fmt.Fprintln(os.Stderr, "\n"+msg)
+		return msg, nil
 	}
 
 	// Confirm
 	if !f.yes {
 		if !confirm(os.Stdin, os.Stderr, "Update metadata?") {
-			fmt.Fprintln(os.Stderr, "Update cancelled.")
-			return nil
+			msg := "Update cancelled."
+			fmt.Fprintln(os.Stderr, msg)
+			return msg, nil
 		}
 	}
 
 	// Parse modified YAML
 	newMeta, err := meta.Unmarshal(modifiedBytes)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	// Update metadata using CopyObject
@@ -389,24 +398,25 @@ func runMetaEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flag
 	sp.Start()
 	if err := client.UpdateMetadata(ctx, u.Bucket, u.Key, newMeta); err != nil {
 		sp.Stop()
-		return err
+		return "", err
 	}
-	sp.StopWithMessage(fmt.Sprintf("✓ Updated metadata for %s", u))
-	return nil
+	msg := fmt.Sprintf("✓ Updated metadata for %s", u)
+	sp.StopWithMessage(msg)
+	return msg, nil
 }
 
 func runBrowser(ctx context.Context, client storage.Client, u *uri.URI, f *flags, extraOpts ...browser.RunOption) error {
 	b := browser.New(client, u, os.Stdin, os.Stderr, version)
-	editFn := func(selected *uri.URI) error {
+	editFn := func(selected *uri.URI) (string, error) {
 		return runFileEdit(ctx, client, selected, f)
 	}
-	editMetaFn := func(selected *uri.URI) error {
+	editMetaFn := func(selected *uri.URI) (string, error) {
 		return runMetaEdit(ctx, client, selected, f)
 	}
-	downloadFn := func(selected *uri.URI, dir string) error {
+	downloadFn := func(selected *uri.URI, dir string) (string, error) {
 		return runDownload(ctx, client, selected, dir)
 	}
-	restoreVersionFn := func(selected *uri.URI, versionID string) error {
+	restoreVersionFn := func(selected *uri.URI, versionID string) (string, error) {
 		return runRestoreVersion(ctx, client, selected, versionID)
 	}
 	opts := []browser.RunOption{
@@ -418,14 +428,14 @@ func runBrowser(ctx context.Context, client storage.Client, u *uri.URI, f *flags
 	return b.Run(ctx, editFn, opts...)
 }
 
-func runRestoreVersion(ctx context.Context, client storage.Client, u *uri.URI, versionID string) error {
+func runRestoreVersion(ctx context.Context, client storage.Client, u *uri.URI, versionID string) (string, error) {
 	// Download current version
 	var currentBuf strings.Builder
 	sp := spinner.New(os.Stderr, fmt.Sprintf("Downloading current %s ...", u))
 	sp.Start()
 	if err := client.Download(ctx, u.Bucket, u.Key, &currentBuf); err != nil {
 		sp.Stop()
-		return err
+		return "", err
 	}
 	sp.StopWithMessage(fmt.Sprintf("✓ Downloaded current %s", u))
 	current := currentBuf.String()
@@ -436,7 +446,7 @@ func runRestoreVersion(ctx context.Context, client storage.Client, u *uri.URI, v
 	sp.Start()
 	if err := client.DownloadVersion(ctx, u.Bucket, u.Key, versionID, &selectedBuf); err != nil {
 		sp.Stop()
-		return err
+		return "", err
 	}
 	sp.StopWithMessage(fmt.Sprintf("✓ Downloaded version %s", versionID))
 	selected := selectedBuf.String()
@@ -451,8 +461,9 @@ func runRestoreVersion(ctx context.Context, client storage.Client, u *uri.URI, v
 		// Check for differences
 		diffText := diff.Generate(current, selected, "current", "version "+versionID)
 		if diffText == "" {
-			fmt.Fprintln(os.Stderr, "No differences between current and selected version.")
-			return nil
+			msg := "No differences between current and selected version."
+			fmt.Fprintln(os.Stderr, msg)
+			return msg, nil
 		}
 
 		// Show diff
@@ -462,8 +473,9 @@ func runRestoreVersion(ctx context.Context, client storage.Client, u *uri.URI, v
 
 	// Confirm
 	if !confirm(os.Stdin, os.Stderr, "Restore this version?") {
-		fmt.Fprintln(os.Stderr, "Restore cancelled.")
-		return nil
+		msg := "Restore cancelled."
+		fmt.Fprintln(os.Stderr, msg)
+		return msg, nil
 	}
 
 	// Get existing metadata to preserve it
@@ -478,16 +490,17 @@ func runRestoreVersion(ctx context.Context, client storage.Client, u *uri.URI, v
 	sp.Start()
 	if err := client.Upload(ctx, u.Bucket, u.Key, strings.NewReader(selected), existingMeta); err != nil {
 		sp.Stop()
-		return err
+		return "", err
 	}
-	sp.StopWithMessage(fmt.Sprintf("✓ Restored %s to version %s", u, versionID))
-	return nil
+	msg := fmt.Sprintf("✓ Restored %s to version %s", u, versionID)
+	sp.StopWithMessage(msg)
+	return msg, nil
 }
 
-func runDownload(ctx context.Context, client storage.Client, u *uri.URI, dir string) error {
+func runDownload(ctx context.Context, client storage.Client, u *uri.URI, dir string) (string, error) {
 	// Ensure directory exists
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("creating directory %s: %w", dir, err)
+		return "", fmt.Errorf("creating directory %s: %w", dir, err)
 	}
 
 	filename := filepath.Base(u.Key)
@@ -495,7 +508,7 @@ func runDownload(ctx context.Context, client storage.Client, u *uri.URI, dir str
 
 	f, err := os.Create(destPath)
 	if err != nil {
-		return fmt.Errorf("creating file %s: %w", destPath, err)
+		return "", fmt.Errorf("creating file %s: %w", destPath, err)
 	}
 
 	sp := spinner.New(os.Stderr, fmt.Sprintf("Downloading %s ...", u))
@@ -504,10 +517,11 @@ func runDownload(ctx context.Context, client storage.Client, u *uri.URI, dir str
 		sp.Stop()
 		_ = f.Close()
 		_ = os.Remove(destPath)
-		return err
+		return "", err
 	}
-	sp.StopWithMessage(fmt.Sprintf("✓ Downloaded to %s", destPath))
-	return f.Close()
+	msg := fmt.Sprintf("✓ Downloaded to %s", destPath)
+	sp.StopWithMessage(msg)
+	return msg, f.Close()
 }
 
 func isTerminal(f *os.File) bool {

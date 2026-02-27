@@ -48,7 +48,8 @@ type childrenLoadedMsg struct {
 
 // editDoneMsg is sent after an edit operation completes.
 type editDoneMsg struct {
-	err error
+	err     error
+	message string
 }
 
 // menuAction represents a context menu item.
@@ -120,14 +121,19 @@ type navigatedMsg struct {
 // editCommand implements tea.ExecCommand to run the edit workflow
 // while the TUI is suspended.
 type editCommand struct {
-	editFn EditFunc
-	uri    *uri.URI
-	stdin  io.Reader
-	stdout io.Writer
-	stderr io.Writer
+	editFn  EditFunc
+	uri     *uri.URI
+	message string
+	stdin   io.Reader
+	stdout  io.Writer
+	stderr  io.Writer
 }
 
-func (c *editCommand) Run() error           { return c.editFn(c.uri) }
+func (c *editCommand) Run() error {
+	msg, err := c.editFn(c.uri)
+	c.message = msg
+	return err
+}
 func (c *editCommand) SetStdin(r io.Reader)  { c.stdin = r }
 func (c *editCommand) SetStdout(w io.Writer) { c.stdout = w }
 func (c *editCommand) SetStderr(w io.Writer) { c.stderr = w }
@@ -145,11 +151,12 @@ type model struct {
 	header  string
 	version string
 
-	canGoUp      bool      // whether backspace/.. should go up
-	termHeight   int       // terminal height for scrolling
-	termWidth    int       // terminal width for layout
-	message      string    // status message (e.g. error from last action)
-	lastEscTime  time.Time // for double-Esc quit
+	canGoUp        bool      // whether backspace/.. should go up
+	termHeight     int       // terminal height for scrolling
+	termWidth      int       // terminal width for layout
+	message        string    // status message (e.g. error from last action)
+	messageIsError bool      // true if message is an error
+	lastEscTime    time.Time // for double-Esc quit
 
 	filtering  bool
 	filterText string
@@ -203,9 +210,9 @@ type model struct {
 
 func (m model) Init() tea.Cmd {
 	if m.initVersionKey != "" {
-		return tea.Batch(m.startLoading(), m.loadVersions(m.initVersionKey))
+		return tea.Batch(tea.ClearScreen, m.startLoading(), m.loadVersions(m.initVersionKey))
 	}
-	return nil
+	return tea.ClearScreen
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -216,6 +223,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyMsg:
 		m.message = "" // clear message on any key
+		m.messageIsError = false
 		return m.handleKey(msg)
 	case childrenLoadedMsg:
 		return m.handleChildrenLoaded(msg)
@@ -223,8 +231,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		if msg.err != nil {
 			m.message = apierror.Classify(msg.err).Error()
+			m.messageIsError = true
+		} else if msg.message != "" {
+			m.message = msg.message
+			m.messageIsError = false
 		}
-		return m, nil
+		return m, tea.ClearScreen
 	case tickMsg:
 		if m.loading {
 			m.spinnerFrame = (m.spinnerFrame + 1) % len(spinnerFrames)
@@ -245,10 +257,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		if msg.err != nil && msg.message != "" {
 			m.message = msg.message + " (refresh failed: " + apierror.Classify(msg.err).Error() + ")"
+			m.messageIsError = true
 		} else if msg.err != nil {
 			m.message = apierror.Classify(msg.err).Error()
+			m.messageIsError = true
 		} else {
 			m.message = msg.message
+			m.messageIsError = false
 		}
 		return m, nil
 	case versionPreviewMsg:
@@ -269,11 +284,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		if msg.err != nil {
 			m.message = apierror.Classify(msg.err).Error()
+			m.messageIsError = true
 			m.initVersionKey = ""
 			return m, nil
 		}
 		if len(msg.versions) <= 1 {
 			m.message = "No version history"
+			m.messageIsError = true
 			m.initVersionKey = ""
 			return m, nil
 		}
@@ -296,6 +313,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		if msg.err != nil {
 			m.message = apierror.Classify(msg.err).Error()
+			m.messageIsError = true
 			return m, nil
 		}
 		m.nodes = msg.nodes
@@ -395,6 +413,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			cmd, err := m.execEdit(n.entry.key)
 			if err != nil {
 				m.message = apierror.Classify(err).Error()
+				m.messageIsError = true
 				return m, nil
 			}
 			return m, cmd
@@ -625,6 +644,7 @@ func (m model) executeMenuAction(action menuAction) (tea.Model, tea.Cmd) {
 		cmd, err := m.execEdit(target.entry.key)
 		if err != nil {
 			m.message = apierror.Classify(err).Error()
+			m.messageIsError = true
 			return m, nil
 		}
 		return m, cmd
@@ -634,6 +654,7 @@ func (m model) executeMenuAction(action menuAction) (tea.Model, tea.Cmd) {
 		cmd, err := m.execEditMeta(target.entry.key)
 		if err != nil {
 			m.message = apierror.Classify(err).Error()
+			m.messageIsError = true
 			return m, nil
 		}
 		return m, cmd
@@ -688,11 +709,13 @@ func (m model) executeInput(action menuAction, text string) (tea.Model, tea.Cmd)
 	case menuDownload:
 		if m.downloadFn == nil {
 			m.message = "Download not available"
+			m.messageIsError = true
 			return m, nil
 		}
 		cmd, err := m.execDownload(target.entry.key, text)
 		if err != nil {
 			m.message = apierror.Classify(err).Error()
+			m.messageIsError = true
 			return m, nil
 		}
 		return m, cmd
@@ -700,6 +723,7 @@ func (m model) executeInput(action menuAction, text string) (tea.Model, tea.Cmd)
 	case menuCopy:
 		if text == target.entry.key {
 			m.message = "Source and destination are the same"
+			m.messageIsError = true
 			return m, nil
 		}
 		m.loading = true
@@ -708,6 +732,7 @@ func (m model) executeInput(action menuAction, text string) (tea.Model, tea.Cmd)
 	case menuMove:
 		if text == target.entry.key {
 			m.message = "Source and destination are the same"
+			m.messageIsError = true
 			return m, nil
 		}
 		m.loading = true
@@ -909,9 +934,9 @@ func (m model) execEditMeta(key string) (tea.Cmd, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmd := &editMetaCommand{editMetaFn: m.editMetaFn, uri: u}
-	return tea.Exec(cmd, func(err error) tea.Msg {
-		return editDoneMsg{err: err}
+	c := &editMetaCommand{editMetaFn: m.editMetaFn, uri: u}
+	return tea.Exec(c, func(err error) tea.Msg {
+		return editDoneMsg{err: err, message: c.message}
 	}), nil
 }
 
@@ -922,9 +947,9 @@ func (m model) execDownload(key, dir string) (tea.Cmd, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmd := &downloadCommand{downloadFn: m.downloadFn, uri: u, dir: dir}
-	return tea.Exec(cmd, func(err error) tea.Msg {
-		return editDoneMsg{err: err}
+	c := &downloadCommand{downloadFn: m.downloadFn, uri: u, dir: dir}
+	return tea.Exec(c, func(err error) tea.Msg {
+		return editDoneMsg{err: err, message: c.message}
 	}), nil
 }
 
@@ -933,12 +958,17 @@ func (m model) execDownload(key, dir string) (tea.Cmd, error) {
 type editMetaCommand struct {
 	editMetaFn EditMetaFunc
 	uri        *uri.URI
+	message    string
 	stdin      io.Reader
 	stdout     io.Writer
 	stderr     io.Writer
 }
 
-func (c *editMetaCommand) Run() error           { return c.editMetaFn(c.uri) }
+func (c *editMetaCommand) Run() error {
+	msg, err := c.editMetaFn(c.uri)
+	c.message = msg
+	return err
+}
 func (c *editMetaCommand) SetStdin(r io.Reader)  { c.stdin = r }
 func (c *editMetaCommand) SetStdout(w io.Writer) { c.stdout = w }
 func (c *editMetaCommand) SetStderr(w io.Writer) { c.stderr = w }
@@ -949,12 +979,17 @@ type downloadCommand struct {
 	downloadFn DownloadFunc
 	uri        *uri.URI
 	dir        string
+	message    string
 	stdin      io.Reader
 	stdout     io.Writer
 	stderr     io.Writer
 }
 
-func (c *downloadCommand) Run() error           { return c.downloadFn(c.uri, c.dir) }
+func (c *downloadCommand) Run() error {
+	msg, err := c.downloadFn(c.uri, c.dir)
+	c.message = msg
+	return err
+}
 func (c *downloadCommand) SetStdin(r io.Reader)  { c.stdin = r }
 func (c *downloadCommand) SetStdout(w io.Writer) { c.stdout = w }
 func (c *downloadCommand) SetStderr(w io.Writer) { c.stderr = w }
@@ -990,6 +1025,7 @@ func (m model) handleVersionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		v := m.versionList[m.versionCursor]
 		if v.IsLatest {
 			m.message = "Already the current version"
+			m.messageIsError = true
 			m.versionMode = false
 			m.versionList = nil
 			m.versionTarget = nil
@@ -997,6 +1033,7 @@ func (m model) handleVersionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if v.IsDeleteMarker {
 			m.message = "Cannot restore a delete marker"
+			m.messageIsError = true
 			m.versionMode = false
 			m.versionList = nil
 			m.versionTarget = nil
@@ -1010,6 +1047,7 @@ func (m model) handleVersionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		cmd, err := m.execRestoreVersion(key, versionID)
 		if err != nil {
 			m.message = apierror.Classify(err).Error()
+			m.messageIsError = true
 			return m, nil
 		}
 		return m, cmd
@@ -1131,12 +1169,17 @@ type restoreVersionCommand struct {
 	restoreVersionFn RestoreVersionFunc
 	uri              *uri.URI
 	versionID        string
+	message          string
 	stdin            io.Reader
 	stdout           io.Writer
 	stderr           io.Writer
 }
 
-func (c *restoreVersionCommand) Run() error           { return c.restoreVersionFn(c.uri, c.versionID) }
+func (c *restoreVersionCommand) Run() error {
+	msg, err := c.restoreVersionFn(c.uri, c.versionID)
+	c.message = msg
+	return err
+}
 func (c *restoreVersionCommand) SetStdin(r io.Reader)  { c.stdin = r }
 func (c *restoreVersionCommand) SetStdout(w io.Writer) { c.stdout = w }
 func (c *restoreVersionCommand) SetStderr(w io.Writer) { c.stderr = w }
@@ -1151,9 +1194,9 @@ func (m model) execRestoreVersion(key, versionID string) (tea.Cmd, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmd := &restoreVersionCommand{restoreVersionFn: m.restoreVersionFn, uri: u, versionID: versionID}
-	return tea.Exec(cmd, func(err error) tea.Msg {
-		return editDoneMsg{err: err}
+	c := &restoreVersionCommand{restoreVersionFn: m.restoreVersionFn, uri: u, versionID: versionID}
+	return tea.Exec(c, func(err error) tea.Msg {
+		return editDoneMsg{err: err, message: c.message}
 	}), nil
 }
 
@@ -1164,9 +1207,9 @@ func (m model) execEdit(key string) (tea.Cmd, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmd := &editCommand{editFn: m.editFn, uri: u}
-	return tea.Exec(cmd, func(err error) tea.Msg {
-		return editDoneMsg{err: err}
+	c := &editCommand{editFn: m.editFn, uri: u}
+	return tea.Exec(c, func(err error) tea.Msg {
+		return editDoneMsg{err: err, message: c.message}
 	}), nil
 }
 
@@ -1197,6 +1240,7 @@ func (m model) handleChildrenLoaded(msg childrenLoadedMsg) (tea.Model, tea.Cmd) 
 	m.loading = false
 	if msg.err != nil {
 		m.message = apierror.Classify(msg.err).Error()
+		m.messageIsError = true
 		return m, nil
 	}
 	for _, n := range m.allNodes() {
@@ -1446,7 +1490,11 @@ func (m model) View() string {
 
 	// Message (e.g. error from last action)
 	if m.message != "" {
-		b.WriteString("\n  " + styleMessage.Render(m.message) + "\n")
+		msgStyle := styleMessageSuccess
+		if m.messageIsError {
+			msgStyle = styleMessageError
+		}
+		b.WriteString("\n  " + msgStyle.Render(m.message) + "\n")
 	}
 
 	// Context menu
@@ -1648,7 +1696,7 @@ func (m model) renderVersionPane() string {
 		prevBuf.WriteString(styleMeta.Render("Loading...") + "\n")
 		contentLines--
 	} else if m.previewError != "" {
-		prevBuf.WriteString(styleMessage.Render(m.previewError) + "\n")
+		prevBuf.WriteString(styleMessageError.Render(m.previewError) + "\n")
 		contentLines--
 	} else if m.previewContent != "" {
 		lines := strings.Split(m.previewContent, "\n")

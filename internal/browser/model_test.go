@@ -39,9 +39,9 @@ func newTestModel(nodes []*node, canGoUp bool) model {
 		bucket:     "test",
 		scheme:     "s3",
 		browser:    b,
-		editFn:     func(u *uri.URI) error { return nil },
-		editMetaFn: func(u *uri.URI) error { return nil },
-		downloadFn: func(u *uri.URI, dir string) error { return nil },
+		editFn:     func(u *uri.URI) (string, error) { return "", nil },
+		editMetaFn: func(u *uri.URI) (string, error) { return "", nil },
+		downloadFn: func(u *uri.URI, dir string) (string, error) { return "", nil },
 	}
 }
 
@@ -497,6 +497,9 @@ func TestEditDoneWithError(t *testing.T) {
 	if m.message != "binary file detected" {
 		t.Errorf("expected error message, got %q", m.message)
 	}
+	if !m.messageIsError {
+		t.Error("expected messageIsError to be true")
+	}
 	if m.quitting {
 		t.Error("should not be quitting after edit error")
 	}
@@ -514,6 +517,24 @@ func TestEditDoneSuccess(t *testing.T) {
 
 	if m.message != "" {
 		t.Errorf("expected empty message, got %q", m.message)
+	}
+}
+
+func TestEditDoneWithMessage(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+
+	msg := editDoneMsg{err: nil, message: "No changes detected. Skipping upload."}
+	updated, _ := m.Update(msg)
+	m = updated.(model)
+
+	if m.message != "No changes detected. Skipping upload." {
+		t.Errorf("expected success message, got %q", m.message)
+	}
+	if m.messageIsError {
+		t.Error("expected messageIsError to be false for success message")
 	}
 }
 
@@ -1049,8 +1070,8 @@ func TestContextMenuDeleteAction(t *testing.T) {
 		bucket:     "test",
 		scheme:     "s3",
 		browser:    b,
-		editFn:     func(u *uri.URI) error { return nil },
-		editMetaFn: func(u *uri.URI) error { return nil },
+		editFn:     func(u *uri.URI) (string, error) { return "", nil },
+		editMetaFn: func(u *uri.URI) (string, error) { return "", nil },
 		menuOpen:   true,
 		menuTarget: nodes[0],
 		menuCursor: menuIndexOf(menuDelete),
@@ -1096,8 +1117,8 @@ func TestDeleteConfirmYes(t *testing.T) {
 		bucket:     "test",
 		scheme:     "s3",
 		browser:    b,
-		editFn:     func(u *uri.URI) error { return nil },
-		editMetaFn: func(u *uri.URI) error { return nil },
+		editFn:     func(u *uri.URI) (string, error) { return "", nil },
+		editMetaFn: func(u *uri.URI) (string, error) { return "", nil },
 		menuOpen:   true,
 		menuTarget: nodes[0],
 		menuCursor: menuIndexOf(menuDelete),
@@ -1475,8 +1496,8 @@ func TestTabKeyInInputModeCopyMove(t *testing.T) {
 		bucket:      "test",
 		scheme:      "s3",
 		browser:     b,
-		editFn:      func(u *uri.URI) error { return nil },
-		editMetaFn:  func(u *uri.URI) error { return nil },
+		editFn:      func(u *uri.URI) (string, error) { return "", nil },
+		editMetaFn:  func(u *uri.URI) (string, error) { return "", nil },
 		inputMode:   true,
 		inputText:   "dir/file",
 		inputAction: menuCopy,
@@ -1699,7 +1720,7 @@ func TestVersionMode_MenuSelectVersions(t *testing.T) {
 		bucket:  "test",
 		scheme:  "s3",
 		browser: b,
-		editFn:  func(u *uri.URI) error { return nil },
+		editFn:  func(u *uri.URI) (string, error) { return "", nil },
 	}
 	m.menuOpen = true
 	m.menuTarget = nodes[0]
@@ -1888,8 +1909,8 @@ func TestVersionMode_EnterOnValidVersion(t *testing.T) {
 		{VersionID: "v1"},
 	}
 	m.versionTarget = nodes[0]
-	m.restoreVersionFn = func(u *uri.URI, versionID string) error {
-		return nil
+	m.restoreVersionFn = func(u *uri.URI, versionID string) (string, error) {
+		return "", nil
 	}
 
 	result, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -2022,7 +2043,7 @@ func TestVersionPreview_CursorMoveTriggersPreview(t *testing.T) {
 		bucket:  "test",
 		scheme:  "s3",
 		browser: b,
-		editFn:  func(u *uri.URI) error { return nil },
+		editFn:  func(u *uri.URI) (string, error) { return "", nil },
 	}
 	m.versionMode = true
 	m.versionCursor = 0
@@ -2201,7 +2222,7 @@ func TestVersionPreview_VersionsLoadedTriggersInitialPreview(t *testing.T) {
 		bucket:        "test",
 		scheme:        "s3",
 		browser:       b,
-		editFn:        func(u *uri.URI) error { return nil },
+		editFn:        func(u *uri.URI) (string, error) { return "", nil },
 		loading:       true,
 		versionTarget: nodes[0],
 	}
@@ -2352,12 +2373,12 @@ func TestInitVersionKey_ReturnsCmd(t *testing.T) {
 	}
 }
 
-func TestInitVersionKey_Empty_ReturnsNil(t *testing.T) {
+func TestInitVersionKey_Empty_ReturnsClearScreen(t *testing.T) {
 	m := newTestModel(nil, false)
 
 	cmd := m.Init()
-	if cmd != nil {
-		t.Fatal("Init() should return nil when initVersionKey is empty")
+	if cmd == nil {
+		t.Fatal("Init() should return tea.ClearScreen")
 	}
 }
 

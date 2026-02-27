@@ -72,7 +72,7 @@ func TestNonExistentDirectoryError(t *testing.T) {
 	}
 
 	b := New(mock, u, strings.NewReader(""), nil, "test")
-	err = b.Run(context.Background(), func(u *uri.URI) error { return nil })
+	err = b.Run(context.Background(), func(u *uri.URI) (string, error) { return "", nil })
 	if err == nil {
 		t.Fatal("expected error for non-existent directory")
 	}
