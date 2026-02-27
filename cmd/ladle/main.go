@@ -521,7 +521,10 @@ func runDownload(ctx context.Context, client storage.Client, u *uri.URI, dir str
 	}
 	msg := fmt.Sprintf("✓ Downloaded to %s", destPath)
 	sp.StopWithMessage(msg)
-	return msg, f.Close()
+	if err := f.Close(); err != nil {
+		return "", err
+	}
+	return msg, nil
 }
 
 func isTerminal(f *os.File) bool {
