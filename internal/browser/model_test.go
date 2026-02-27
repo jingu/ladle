@@ -2453,21 +2453,21 @@ func TestVersionsLoadedMsg_WithInitVersionKey_Error(t *testing.T) {
 	}
 }
 
-func TestVersionList_HeightRespected(t *testing.T) {
+func TestVersionPaneHeight(t *testing.T) {
 	m := newTestModel(nil, false)
 	m.termHeight = 25
 
-	// 30 versions, overhead = 18, so max = 25-18 = 7
+	// overhead = 18, so pane height = 25-18 = 7 regardless of version count
 	m.versionList = make([]storage.ObjectVersion, 30)
-	h := m.versionListHeight()
+	h := m.versionPaneHeight()
 	if h != 7 {
-		t.Errorf("versionListHeight: got %d, want 7 (termHeight=25, overhead=18)", h)
+		t.Errorf("versionPaneHeight: got %d, want 7 (termHeight=25, overhead=18)", h)
 	}
 
-	// When all versions fit, return full count
+	// Pane height stays the same even with few versions (preview gets more space)
 	m.versionList = make([]storage.ObjectVersion, 3)
-	h = m.versionListHeight()
-	if h != 3 {
-		t.Errorf("versionListHeight: got %d, want 3", h)
+	h = m.versionPaneHeight()
+	if h != 7 {
+		t.Errorf("versionPaneHeight: got %d, want 7 (should not shrink to version count)", h)
 	}
 }

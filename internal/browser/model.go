@@ -1084,7 +1084,7 @@ func (m model) handleVersionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // previewPageSize returns the number of visible content lines in the preview pane.
 // Matches the right pane's content area (version list visible items).
 func (m model) previewPageSize() int {
-	h := m.versionListHeight()
+	h := m.versionPaneHeight()
 	if h < 1 {
 		return 1
 	}
@@ -1565,19 +1565,18 @@ func (m model) View() string {
 	return b.String()
 }
 
-// versionListHeight returns the max number of version items visible in the pane.
+// versionPaneHeight returns the number of rows available for the version pane content.
+// This is the full available height regardless of version count, so the preview
+// pane always has enough space even when there are only a few versions.
 // Header art(9) + path(2) + version border(2) + help(3) + message(2 worst case) = ~18 overhead lines.
-func (m model) versionListHeight() int {
+func (m model) versionPaneHeight() int {
 	const overhead = 18
 	if m.termHeight <= overhead {
-		return len(m.versionList) // no constraint if terminal size unknown/tiny
+		return len(m.versionList)
 	}
 	max := m.termHeight - overhead
 	if max < 3 {
 		max = 3
-	}
-	if max > len(m.versionList) {
-		max = len(m.versionList)
 	}
 	return max
 }
@@ -1589,9 +1588,13 @@ func (m model) renderVersionPane() string {
 		targetName = m.versionTarget.entry.name
 	}
 
-	// Determine how many version items fit on screen
-	maxItems := m.versionListHeight()
+	// Determine pane height and how many version items to display
+	paneHeight := m.versionPaneHeight()
 	total := len(m.versionList)
+	maxItems := paneHeight
+	if maxItems > total {
+		maxItems = total
+	}
 
 	// Scroll the version list to keep cursor visible
 	startIdx := 0
@@ -1678,13 +1681,20 @@ func (m model) renderVersionPane() string {
 		}
 	}
 
-	// Count actual left pane lines (header + items + scroll indicators)
-	leftLines := 1 + (endIdx - startIdx) // header + visible items
+	// Use paneHeight for consistent layout regardless of version count.
+	// +1 for the "Versions: ..." header line.
+	leftLines := paneHeight + 1
+
+	// Pad left pane if fewer versions than pane height
+	padLines := paneHeight - (endIdx - startIdx)
 	if startIdx > 0 {
-		leftLines++ // "more above"
+		padLines-- // "more above" takes a line
 	}
 	if endIdx < total {
-		leftLines++ // "more below"
+		padLines-- // "more below" takes a line
+	}
+	for i := 0; i < padLines; i++ {
+		verBuf.WriteString("\n")
 	}
 
 	// Build preview pane (right pane) with height matching left pane
