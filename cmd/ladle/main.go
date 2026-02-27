@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/jingu/ladle/internal/apierror"
 	"github.com/jingu/ladle/internal/browser"
 	"github.com/jingu/ladle/internal/completion"
@@ -29,7 +30,9 @@ var version = "dev"
 
 func main() {
 	if err := newRootCmd().Execute(); err != nil {
-		fmt.Fprintf(os.Stderr, "\033[31mError: %s\033[0m\n", err)
+		r := lipgloss.NewRenderer(os.Stderr)
+		errStyle := r.NewStyle().Foreground(lipgloss.Color("9"))
+		fmt.Fprintln(os.Stderr, errStyle.Render(fmt.Sprintf("Error: %s", err)))
 		os.Exit(1)
 	}
 }
@@ -56,8 +59,18 @@ func newRootCmd() *cobra.Command {
 		Use:     "ladle <uri>",
 		Short:   "Edit cloud storage files with your local editor",
 		Version: version,
-		Long: `ladle downloads a file from cloud storage, opens it in your editor,
-and uploads the changes back when you save and close the editor.
+		Long: `  ██
+  ██
+  ██       _     ____   _      _____
+  ██      / \   |  _ \ | |    | ____|
+  ██     / _ \  | | | || |    |  _|
+  ██    / ___ \ | |_| || |___ | |___
+ ▄██▄  /_/   \_\|____/ |_____||_____|
+██████
+ ▀████▀  ` + version + `
+
+Edit cloud storage files directly from your terminal.
+Download, edit in your favorite editor, diff, confirm, upload — all in one shot.
 
 Examples:
   ladle s3://bucket/path/to/file.html
@@ -338,12 +351,44 @@ func runMetaEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flag
 func runBrowser(ctx context.Context, client storage.Client, u *uri.URI, f *flags) error {
 	b := browser.New(client, u, os.Stdin, os.Stderr, version)
 	editFn := func(selected *uri.URI) error {
-		if f.meta {
-			return runMetaEdit(ctx, client, selected, f)
-		}
 		return runFileEdit(ctx, client, selected, f)
 	}
-	return b.Run(ctx, editFn)
+	editMetaFn := func(selected *uri.URI) error {
+		return runMetaEdit(ctx, client, selected, f)
+	}
+	downloadFn := func(selected *uri.URI, dir string) error {
+		return runDownload(ctx, client, selected, dir)
+	}
+	return b.Run(ctx, editFn,
+		browser.WithEditMeta(editMetaFn),
+		browser.WithDownload(downloadFn),
+	)
+}
+
+func runDownload(ctx context.Context, client storage.Client, u *uri.URI, dir string) error {
+	// Ensure directory exists
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("creating directory %s: %w", dir, err)
+	}
+
+	filename := filepath.Base(u.Key)
+	destPath := filepath.Join(dir, filename)
+
+	f, err := os.Create(destPath)
+	if err != nil {
+		return fmt.Errorf("creating file %s: %w", destPath, err)
+	}
+
+	sp := spinner.New(os.Stderr, fmt.Sprintf("Downloading %s ...", u))
+	sp.Start()
+	if err := client.Download(ctx, u.Bucket, u.Key, f); err != nil {
+		sp.Stop()
+		_ = f.Close()
+		_ = os.Remove(destPath)
+		return err
+	}
+	sp.StopWithMessage(fmt.Sprintf("✓ Downloaded to %s", destPath))
+	return f.Close()
 }
 
 const bucketCacheTTL = 5 * time.Minute

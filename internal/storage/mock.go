@@ -150,3 +150,29 @@ func (m *MockClient) ListBuckets(_ context.Context) ([]string, error) {
 	defer m.mu.Unlock()
 	return m.buckets, nil
 }
+
+func (m *MockClient) Delete(_ context.Context, bucket, key string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := m.key(bucket, key)
+	if _, ok := m.objects[k]; !ok {
+		return fmt.Errorf("object not found: %s/%s", bucket, key)
+	}
+	delete(m.objects, k)
+	return nil
+}
+
+func (m *MockClient) Copy(_ context.Context, bucket, srcKey, dstKey string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	src := m.key(bucket, srcKey)
+	obj, ok := m.objects[src]
+	if !ok {
+		return fmt.Errorf("object not found: %s/%s", bucket, srcKey)
+	}
+	dst := m.key(bucket, dstKey)
+	copied := mockObject{data: make([]byte, len(obj.data)), meta: obj.meta, lastModified: obj.lastModified}
+	copy(copied.data, obj.data)
+	m.objects[dst] = copied
+	return nil
+}

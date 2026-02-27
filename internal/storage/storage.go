@@ -44,4 +44,10 @@ type Client interface {
 
 	// ListBuckets lists all accessible buckets.
 	ListBuckets(ctx context.Context) ([]string, error)
+
+	// Delete deletes an object.
+	Delete(ctx context.Context, bucket, key string) error
+
+	// Copy copies an object within the same bucket.
+	Copy(ctx context.Context, bucket, srcKey, dstKey string) error
 }

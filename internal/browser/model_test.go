@@ -3,6 +3,8 @@ package browser
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -16,17 +18,19 @@ func newTestModel(nodes []*node, canGoUp bool) model {
 	u, _ := uri.Parse("s3://test/")
 	b := New(mock, u, nil, nil, "test")
 	return model{
-		nodes:   nodes,
-		cursor:  0,
-		header:  "s3://test",
-		version: "test",
-		canGoUp: canGoUp,
-		client:  mock,
-		ctx:     context.Background(),
-		bucket:  "test",
-		scheme:  "s3",
-		browser: b,
-		editFn:  func(u *uri.URI) error { return nil },
+		nodes:      nodes,
+		cursor:     0,
+		header:     "s3://test",
+		version:    "test",
+		canGoUp:    canGoUp,
+		client:     mock,
+		ctx:        context.Background(),
+		bucket:     "test",
+		scheme:     "s3",
+		browser:    b,
+		editFn:     func(u *uri.URI) error { return nil },
+		editMetaFn: func(u *uri.URI) error { return nil },
+		downloadFn: func(u *uri.URI, dir string) error { return nil },
 	}
 }
 
@@ -881,5 +885,783 @@ func TestNavigatedMsgResetsFilter(t *testing.T) {
 	}
 	if m.filterText != "" {
 		t.Errorf("expected filterText empty after navigation, got %q", m.filterText)
+	}
+}
+
+func TestContextMenuOpenOnFile(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "dir/", key: "dir/", isDir: true}},
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+
+	// Move cursor to file.txt
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(model)
+
+	// Press right arrow — should open context menu
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	m = updated.(model)
+
+	if !m.menuOpen {
+		t.Fatal("expected context menu to be open")
+	}
+	if m.menuTarget == nil || m.menuTarget.entry.name != "file.txt" {
+		t.Error("expected menu target to be file.txt")
+	}
+	if m.menuCursor != 0 {
+		t.Errorf("expected menu cursor at 0, got %d", m.menuCursor)
+	}
+}
+
+func TestContextMenuNotOnDir(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "dir/", key: "dir/", isDir: true}, loaded: true},
+	}
+	m := newTestModel(nodes, false)
+
+	// Right arrow on dir should expand, not open menu
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	m = updated.(model)
+
+	if m.menuOpen {
+		t.Error("context menu should not open on directory")
+	}
+}
+
+func TestContextMenuNavigation(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.menuOpen = true
+	m.menuTarget = nodes[0]
+	m.menuCursor = 0
+
+	// Move down
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(model)
+	if m.menuCursor != 1 {
+		t.Errorf("expected menu cursor 1, got %d", m.menuCursor)
+	}
+
+	// Move down with j
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	m = updated.(model)
+	if m.menuCursor != 2 {
+		t.Errorf("expected menu cursor 2, got %d", m.menuCursor)
+	}
+
+	// Move up
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m = updated.(model)
+	if m.menuCursor != 1 {
+		t.Errorf("expected menu cursor 1, got %d", m.menuCursor)
+	}
+
+	// Move up with k
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	m = updated.(model)
+	if m.menuCursor != 0 {
+		t.Errorf("expected menu cursor 0, got %d", m.menuCursor)
+	}
+}
+
+func TestContextMenuEscClose(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.menuOpen = true
+	m.menuTarget = nodes[0]
+
+	// Esc should close menu
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	m = updated.(model)
+
+	if m.menuOpen {
+		t.Error("expected menu to be closed after Esc")
+	}
+	if m.menuTarget != nil {
+		t.Error("expected menu target to be nil after close")
+	}
+}
+
+func TestContextMenuLeftClose(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.menuOpen = true
+	m.menuTarget = nodes[0]
+
+	// Left arrow should close menu
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	m = updated.(model)
+
+	if m.menuOpen {
+		t.Error("expected menu to be closed after left arrow")
+	}
+}
+
+func TestContextMenuEditAction(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.menuOpen = true
+	m.menuTarget = nodes[0]
+	m.menuCursor = 0 // Edit
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected a command for edit action")
+	}
+}
+
+func TestContextMenuDeleteAction(t *testing.T) {
+	mock := storage.NewMockClient()
+	mock.PutObject("test", "file.txt", []byte("hello"), nil)
+
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	u, _ := uri.Parse("s3://test/")
+	b := New(mock, u, nil, nil, "test")
+	m := model{
+		nodes:      nodes,
+		cursor:     0,
+		header:     "s3://test",
+		version:    "test",
+		client:     mock,
+		ctx:        context.Background(),
+		bucket:     "test",
+		scheme:     "s3",
+		browser:    b,
+		editFn:     func(u *uri.URI) error { return nil },
+		editMetaFn: func(u *uri.URI) error { return nil },
+		menuOpen:   true,
+		menuTarget: nodes[0],
+		menuCursor: 5, // Delete
+	}
+
+	// Selecting Delete should open confirm dialog, not delete immediately
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(model)
+
+	if m.menuOpen {
+		t.Error("menu should be closed after selecting delete")
+	}
+	if !m.confirmMode {
+		t.Fatal("expected confirm mode to be active")
+	}
+	if m.loading {
+		t.Error("should not be loading yet (waiting for confirmation)")
+	}
+	if cmd != nil {
+		t.Error("no command should be returned before confirmation")
+	}
+	if !strings.Contains(m.confirmPrompt, "file.txt") {
+		t.Errorf("confirm prompt should mention the file, got %q", m.confirmPrompt)
+	}
+}
+
+func TestDeleteConfirmYes(t *testing.T) {
+	mock := storage.NewMockClient()
+	mock.PutObject("test", "file.txt", []byte("hello"), nil)
+
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	u, _ := uri.Parse("s3://test/")
+	b := New(mock, u, nil, nil, "test")
+	m := model{
+		nodes:      nodes,
+		cursor:     0,
+		header:     "s3://test",
+		version:    "test",
+		client:     mock,
+		ctx:        context.Background(),
+		bucket:     "test",
+		scheme:     "s3",
+		browser:    b,
+		editFn:     func(u *uri.URI) error { return nil },
+		editMetaFn: func(u *uri.URI) error { return nil },
+		menuOpen:   true,
+		menuTarget: nodes[0],
+		menuCursor: 5, // Delete
+	}
+
+	// Open confirm dialog
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(model)
+
+	// Press "y" to confirm
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m = updated.(model)
+
+	if m.confirmMode {
+		t.Error("confirm mode should be closed after confirmation")
+	}
+	if !m.loading {
+		t.Error("expected loading state during delete")
+	}
+	if cmd == nil {
+		t.Fatal("expected a command for delete")
+	}
+}
+
+func TestDeleteConfirmNo(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.menuOpen = true
+	m.menuTarget = nodes[0]
+	m.menuCursor = 5 // Delete
+
+	// Open confirm dialog
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(model)
+
+	// Press "n" to cancel
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	m = updated.(model)
+
+	if m.confirmMode {
+		t.Error("confirm mode should be closed")
+	}
+	if m.loading {
+		t.Error("should not be loading after cancel")
+	}
+}
+
+func TestDeleteConfirmEsc(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.menuOpen = true
+	m.menuTarget = nodes[0]
+	m.menuCursor = 5 // Delete
+
+	// Open confirm dialog
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(model)
+
+	// Press Esc to cancel
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	m = updated.(model)
+
+	if m.confirmMode {
+		t.Error("confirm mode should be closed")
+	}
+}
+
+func TestDeleteConfirmEnterDefaultNo(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.menuOpen = true
+	m.menuTarget = nodes[0]
+	m.menuCursor = 5 // Delete
+
+	// Open confirm dialog
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(model)
+
+	// Press Enter without typing "y" -> default No
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(model)
+
+	if m.confirmMode {
+		t.Error("confirm mode should be closed")
+	}
+	if m.loading {
+		t.Error("should not be loading after default cancel")
+	}
+}
+
+func TestContextMenuCopyOpensInput(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "path/file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.menuOpen = true
+	m.menuTarget = nodes[0]
+	m.menuCursor = 3 // Copy to...
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(model)
+
+	if !m.inputMode {
+		t.Fatal("expected input mode for copy")
+	}
+	if m.inputText != "path/file.txt" {
+		t.Errorf("expected input text to be pre-filled with key, got %q", m.inputText)
+	}
+	if m.inputAction != menuCopy {
+		t.Errorf("expected input action to be menuCopy")
+	}
+}
+
+func TestContextMenuMoveOpensInput(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "path/file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.menuOpen = true
+	m.menuTarget = nodes[0]
+	m.menuCursor = 4 // Move to...
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(model)
+
+	if !m.inputMode {
+		t.Fatal("expected input mode for move")
+	}
+	if m.inputAction != menuMove {
+		t.Errorf("expected input action to be menuMove")
+	}
+}
+
+func TestContextMenuDownloadOpensInput(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.menuOpen = true
+	m.menuTarget = nodes[0]
+	m.menuCursor = 2 // Download to...
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(model)
+
+	if !m.inputMode {
+		t.Fatal("expected input mode for download")
+	}
+	if m.inputText != "./" {
+		t.Errorf("expected default input './', got %q", m.inputText)
+	}
+}
+
+func TestInputModeEscCancel(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.inputMode = true
+	m.inputText = "some/path"
+	m.inputAction = menuCopy
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	m = updated.(model)
+
+	if m.inputMode {
+		t.Error("expected input mode to be cancelled")
+	}
+	if m.inputText != "" {
+		t.Errorf("expected input text to be cleared, got %q", m.inputText)
+	}
+}
+
+func TestInputModeTyping(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.inputMode = true
+	m.inputText = ""
+	m.inputAction = menuCopy
+
+	// Type characters
+	for _, r := range "new/path" {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(model)
+	}
+	if m.inputText != "new/path" {
+		t.Errorf("expected input text 'new/path', got %q", m.inputText)
+	}
+
+	// Backspace
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	m = updated.(model)
+	if m.inputText != "new/pat" {
+		t.Errorf("expected input text 'new/pat', got %q", m.inputText)
+	}
+}
+
+func TestInputSamePathError(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.inputMode = true
+	m.inputText = "file.txt"
+	m.inputAction = menuCopy
+	m.menuTarget = nodes[0]
+
+	// Enter with same path as source
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(model)
+
+	if m.message != "Source and destination are the same" {
+		t.Errorf("expected same path error, got %q", m.message)
+	}
+}
+
+func TestViewWithContextMenu(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.menuOpen = true
+	m.menuTarget = nodes[0]
+	m.menuCursor = 0
+
+	view := m.View()
+	if !strings.Contains(view, "Edit") {
+		t.Error("expected Edit in context menu")
+	}
+	if !strings.Contains(view, "Delete") {
+		t.Error("expected Delete in context menu")
+	}
+	if !strings.Contains(view, "Copy to") {
+		t.Error("expected Copy to... in context menu")
+	}
+	if !strings.Contains(view, "esc") {
+		t.Error("expected menu help text")
+	}
+}
+
+func TestViewWithInputMode(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.inputMode = true
+	m.inputPrompt = "Copy to path (same bucket)"
+	m.inputText = "new/path"
+
+	view := m.View()
+	if !strings.Contains(view, "Copy to path (same bucket)") {
+		t.Error("expected input prompt in view")
+	}
+	if !strings.Contains(view, "new/path") {
+		t.Error("expected input text in view")
+	}
+}
+
+func TestActionDoneMsg(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.loading = true
+
+	msg := actionDoneMsg{message: "Deleted file.txt"}
+	updated, _ := m.Update(msg)
+	m = updated.(model)
+
+	if m.loading {
+		t.Error("expected loading to be false")
+	}
+	if m.message != "Deleted file.txt" {
+		t.Errorf("expected message 'Deleted file.txt', got %q", m.message)
+	}
+}
+
+func TestActionDoneMsgWithError(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.loading = true
+
+	msg := actionDoneMsg{err: fmt.Errorf("permission denied")}
+	updated, _ := m.Update(msg)
+	m = updated.(model)
+
+	if m.loading {
+		t.Error("expected loading to be false")
+	}
+	if m.message != "permission denied" {
+		t.Errorf("expected error message, got %q", m.message)
+	}
+}
+
+func TestCompleteInputSingleMatch(t *testing.T) {
+	candidates := []string{"path/to/file.txt", "path/to/other.txt"}
+	result := completeInput("path/to/f", "path/to/", candidates)
+	if result != "path/to/file.txt" {
+		t.Errorf("expected 'path/to/file.txt', got %q", result)
+	}
+}
+
+func TestCompleteInputMultipleMatches(t *testing.T) {
+	candidates := []string{"dir/config.json", "dir/config.yaml", "dir/readme.md"}
+	result := completeInput("dir/con", "dir/", candidates)
+	if result != "dir/config." {
+		t.Errorf("expected 'dir/config.', got %q", result)
+	}
+}
+
+func TestCompleteInputNoMatch(t *testing.T) {
+	candidates := []string{"path/to/file.txt"}
+	result := completeInput("path/xyz", "path/", candidates)
+	if result != "path/xyz" {
+		t.Errorf("expected unchanged 'path/xyz', got %q", result)
+	}
+}
+
+func TestCompleteInputEmptyCandidates(t *testing.T) {
+	result := completeInput("some/path", "some/", nil)
+	if result != "some/path" {
+		t.Errorf("expected unchanged 'some/path', got %q", result)
+	}
+}
+
+func TestCompleteInputExactMatch(t *testing.T) {
+	candidates := []string{"dir/file.txt"}
+	result := completeInput("dir/file.txt", "dir/", candidates)
+	if result != "dir/file.txt" {
+		t.Errorf("expected 'dir/file.txt', got %q", result)
+	}
+}
+
+func TestCompleteInputRootLevel(t *testing.T) {
+	candidates := []string{"readme.md", "readme.txt"}
+	result := completeInput("read", "", candidates)
+	if result != "readme." {
+		t.Errorf("expected 'readme.', got %q", result)
+	}
+}
+
+func TestCompleteInputDirPrefix(t *testing.T) {
+	// When input is "logs/" and candidates include dirs
+	candidates := []string{"logs/2024/", "logs/2025/"}
+	result := completeInput("logs/20", "logs/", candidates)
+	if result != "logs/202" {
+		t.Errorf("expected 'logs/202', got %q", result)
+	}
+}
+
+func TestTabKeyInInputModeCopyMove(t *testing.T) {
+	mock := storage.NewMockClient()
+	mock.PutObject("test", "dir/file1.txt", []byte("a"), nil)
+	mock.PutObject("test", "dir/file2.txt", []byte("b"), nil)
+
+	nodes := []*node{
+		{entry: entry{name: "dir/file1.txt", key: "dir/file1.txt"}},
+	}
+	u, _ := uri.Parse("s3://test/")
+	b := New(mock, u, nil, nil, "test")
+	m := model{
+		nodes:       nodes,
+		client:      mock,
+		ctx:         context.Background(),
+		bucket:      "test",
+		scheme:      "s3",
+		browser:     b,
+		editFn:      func(u *uri.URI) error { return nil },
+		editMetaFn:  func(u *uri.URI) error { return nil },
+		inputMode:   true,
+		inputText:   "dir/file",
+		inputAction: menuCopy,
+	}
+
+	// Tab should return a command (async completion)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if cmd == nil {
+		t.Fatal("expected a command for tab completion")
+	}
+
+	// Execute the command to get the message
+	msg := cmd()
+	tcMsg, ok := msg.(tabCompleteMsg)
+	if !ok {
+		t.Fatalf("expected tabCompleteMsg, got %T", msg)
+	}
+	if len(tcMsg.candidates) != 2 {
+		t.Errorf("expected 2 candidates, got %d", len(tcMsg.candidates))
+	}
+
+	// Apply the message
+	updated, _ := m.Update(tcMsg)
+	m = updated.(model)
+	if m.inputText != "dir/file" {
+		// Both match "dir/file" prefix, so LCP is "dir/file" - stays the same
+		// since both are "dir/file1.txt" and "dir/file2.txt", LCP = "dir/file"
+		t.Errorf("expected 'dir/file', got %q", m.inputText)
+	}
+}
+
+func TestTabCompleteMsg(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.inputMode = true
+	m.inputText = "path/fi"
+
+	msg := tabCompleteMsg{
+		candidates: []string{"path/file.txt", "path/final.txt"},
+		prefix:     "path/",
+	}
+	updated, _ := m.Update(msg)
+	m = updated.(model)
+
+	if m.inputText != "path/fi" {
+		// LCP of "path/file.txt" and "path/final.txt" matching "path/fi" is "path/fi"
+		// Actually: both start with "path/fi", LCP = "path/fi" (l vs n at index 7)
+		t.Errorf("expected 'path/fi', got %q", m.inputText)
+	}
+}
+
+func TestTabCompleteMsgSingleCandidate(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.inputMode = true
+	m.inputText = "path/fi"
+
+	msg := tabCompleteMsg{
+		candidates: []string{"path/file.txt"},
+		prefix:     "path/",
+	}
+	updated, _ := m.Update(msg)
+	m = updated.(model)
+
+	if m.inputText != "path/file.txt" {
+		t.Errorf("expected 'path/file.txt', got %q", m.inputText)
+	}
+}
+
+func TestTabKeyInDownloadMode(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.inputMode = true
+	m.inputText = "./"
+	m.inputAction = menuDownload
+
+	// Tab in download mode should now trigger local completion
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if cmd == nil {
+		t.Fatal("expected a command for local tab completion")
+	}
+
+	// Execute the command - it should return localTabCompleteMsg
+	msg := cmd()
+	_, ok := msg.(localTabCompleteMsg)
+	if !ok {
+		t.Fatalf("expected localTabCompleteMsg, got %T", msg)
+	}
+}
+
+func TestLocalTabComplete(t *testing.T) {
+	// Create a temp directory with some files
+	tmpDir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(tmpDir, "alpha.txt"), []byte("a"), 0644)
+	_ = os.WriteFile(filepath.Join(tmpDir, "alpha.log"), []byte("b"), 0644)
+	_ = os.Mkdir(filepath.Join(tmpDir, "beta"), 0755)
+
+	cmd := localTabComplete(filepath.Join(tmpDir, "al"))
+	msg := cmd().(localTabCompleteMsg)
+
+	// Should have 3 candidates: alpha.log, alpha.txt, beta/
+	if len(msg.candidates) != 3 {
+		t.Fatalf("expected 3 candidates, got %d: %v", len(msg.candidates), msg.candidates)
+	}
+}
+
+func TestLocalTabCompleteSingleMatch(t *testing.T) {
+	tmpDir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(tmpDir, "unique.txt"), []byte("a"), 0644)
+
+	input := filepath.Join(tmpDir, "uni")
+	cmd := localTabComplete(input)
+	msg := cmd().(localTabCompleteMsg)
+
+	nodes := []*node{{entry: entry{name: "file.txt", key: "file.txt"}}}
+	m := newTestModel(nodes, false)
+	m.inputMode = true
+	m.inputText = input
+
+	updated, _ := m.Update(msg)
+	m = updated.(model)
+
+	expected := filepath.Join(tmpDir, "unique.txt")
+	if m.inputText != expected {
+		t.Errorf("expected %q, got %q", expected, m.inputText)
+	}
+}
+
+func TestLocalTabCompleteDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	_ = os.Mkdir(filepath.Join(tmpDir, "subdir"), 0755)
+
+	input := filepath.Join(tmpDir, "sub")
+	cmd := localTabComplete(input)
+	msg := cmd().(localTabCompleteMsg)
+
+	nodes := []*node{{entry: entry{name: "file.txt", key: "file.txt"}}}
+	m := newTestModel(nodes, false)
+	m.inputMode = true
+	m.inputText = input
+
+	updated, _ := m.Update(msg)
+	m = updated.(model)
+
+	expected := filepath.Join(tmpDir, "subdir") + string(os.PathSeparator)
+	if m.inputText != expected {
+		t.Errorf("expected %q, got %q", expected, m.inputText)
+	}
+}
+
+func TestCompleteLocalInputSingleMatch(t *testing.T) {
+	candidates := []string{"/tmp/dir/file.txt", "/tmp/dir/other.log"}
+	result := completeLocalInput("/tmp/dir/f", candidates)
+	if result != "/tmp/dir/file.txt" {
+		t.Errorf("expected '/tmp/dir/file.txt', got %q", result)
+	}
+}
+
+func TestCompleteLocalInputMultipleMatches(t *testing.T) {
+	candidates := []string{"/tmp/dir/config.json", "/tmp/dir/config.yaml"}
+	result := completeLocalInput("/tmp/dir/con", candidates)
+	if result != "/tmp/dir/config." {
+		t.Errorf("expected '/tmp/dir/config.', got %q", result)
+	}
+}
+
+func TestCompleteLocalInputNoMatch(t *testing.T) {
+	candidates := []string{"/tmp/dir/file.txt"}
+	result := completeLocalInput("/tmp/dir/xyz", candidates)
+	if result != "/tmp/dir/xyz" {
+		t.Errorf("expected unchanged '/tmp/dir/xyz', got %q", result)
+	}
+}
+
+func TestLongestCommonPrefix(t *testing.T) {
+	tests := []struct {
+		a, b     string
+		expected string
+	}{
+		{"abc", "abd", "ab"},
+		{"abc", "abc", "abc"},
+		{"abc", "xyz", ""},
+		{"abc", "ab", "ab"},
+		{"", "abc", ""},
+		{"abc", "", ""},
+	}
+	for _, tt := range tests {
+		got := longestCommonPrefix(tt.a, tt.b)
+		if got != tt.expected {
+			t.Errorf("longestCommonPrefix(%q, %q) = %q, want %q", tt.a, tt.b, got, tt.expected)
+		}
 	}
 }
