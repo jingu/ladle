@@ -1109,7 +1109,7 @@ func (m model) loadVersionPreview(key, versionID string) tea.Cmd {
 		}
 		data := buf.Bytes()
 		if editor.IsBinary(data) {
-			return versionPreviewMsg{versionID: versionID, err: fmt.Errorf("Binary file")}
+			return versionPreviewMsg{versionID: versionID, err: fmt.Errorf("binary file")}
 		}
 		return versionPreviewMsg{versionID: versionID, content: string(data)}
 	}

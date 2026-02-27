@@ -14,6 +14,16 @@ import (
 	"github.com/jingu/ladle/internal/uri"
 )
 
+// menuIndexOf returns the index of the given action in menuItems.
+func menuIndexOf(action menuAction) int {
+	for i, item := range menuItems {
+		if item.action == action {
+			return i
+		}
+	}
+	return -1
+}
+
 func newTestModel(nodes []*node, canGoUp bool) model {
 	mock := storage.NewMockClient()
 	u, _ := uri.Parse("s3://test/")
@@ -1012,7 +1022,7 @@ func TestContextMenuEditAction(t *testing.T) {
 	m := newTestModel(nodes, false)
 	m.menuOpen = true
 	m.menuTarget = nodes[0]
-	m.menuCursor = 0 // Edit
+	m.menuCursor = menuIndexOf(menuEdit)
 
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
@@ -1043,7 +1053,7 @@ func TestContextMenuDeleteAction(t *testing.T) {
 		editMetaFn: func(u *uri.URI) error { return nil },
 		menuOpen:   true,
 		menuTarget: nodes[0],
-		menuCursor: 6, // Delete
+		menuCursor: menuIndexOf(menuDelete),
 	}
 
 	// Selecting Delete should open confirm dialog, not delete immediately
@@ -1090,7 +1100,7 @@ func TestDeleteConfirmYes(t *testing.T) {
 		editMetaFn: func(u *uri.URI) error { return nil },
 		menuOpen:   true,
 		menuTarget: nodes[0],
-		menuCursor: 6, // Delete
+		menuCursor: menuIndexOf(menuDelete),
 	}
 
 	// Open confirm dialog
@@ -1119,7 +1129,7 @@ func TestDeleteConfirmNo(t *testing.T) {
 	m := newTestModel(nodes, false)
 	m.menuOpen = true
 	m.menuTarget = nodes[0]
-	m.menuCursor = 6 // Delete
+	m.menuCursor = menuIndexOf(menuDelete)
 
 	// Open confirm dialog
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -1144,7 +1154,7 @@ func TestDeleteConfirmEsc(t *testing.T) {
 	m := newTestModel(nodes, false)
 	m.menuOpen = true
 	m.menuTarget = nodes[0]
-	m.menuCursor = 6 // Delete
+	m.menuCursor = menuIndexOf(menuDelete)
 
 	// Open confirm dialog
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -1166,7 +1176,7 @@ func TestDeleteConfirmEnterDefaultNo(t *testing.T) {
 	m := newTestModel(nodes, false)
 	m.menuOpen = true
 	m.menuTarget = nodes[0]
-	m.menuCursor = 6 // Delete
+	m.menuCursor = menuIndexOf(menuDelete)
 
 	// Open confirm dialog
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -1191,7 +1201,7 @@ func TestContextMenuCopyOpensInput(t *testing.T) {
 	m := newTestModel(nodes, false)
 	m.menuOpen = true
 	m.menuTarget = nodes[0]
-	m.menuCursor = 3 // Copy to...
+	m.menuCursor = menuIndexOf(menuCopy)
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(model)
@@ -1214,7 +1224,7 @@ func TestContextMenuMoveOpensInput(t *testing.T) {
 	m := newTestModel(nodes, false)
 	m.menuOpen = true
 	m.menuTarget = nodes[0]
-	m.menuCursor = 4 // Move to...
+	m.menuCursor = menuIndexOf(menuMove)
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(model)
@@ -1234,7 +1244,7 @@ func TestContextMenuDownloadOpensInput(t *testing.T) {
 	m := newTestModel(nodes, false)
 	m.menuOpen = true
 	m.menuTarget = nodes[0]
-	m.menuCursor = 2 // Download to...
+	m.menuCursor = menuIndexOf(menuDownload)
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(model)

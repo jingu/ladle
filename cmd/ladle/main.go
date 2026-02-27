@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -144,12 +145,12 @@ func run(cmd *cobra.Command, args []string, f *flags) error {
 
 	// --versions: show version history directly
 	if f.versions {
-		if u.IsDirectory() || u.Key == "" {
+		if u.IsDirectory() {
 			return fmt.Errorf("--versions requires a file URI (not a directory)")
 		}
 		versionsKey := u.Key
 		// Adjust URI to parent directory for browser, then open versions view
-		parentKey := filepath.Dir(u.Key) + "/"
+		parentKey := path.Dir(u.Key) + "/"
 		if parentKey == "./" {
 			parentKey = ""
 		}
@@ -157,7 +158,7 @@ func run(cmd *cobra.Command, args []string, f *flags) error {
 		if err != nil {
 			return err
 		}
-		return runBrowserWithVersions(ctx, client, dirURI, f, versionsKey)
+		return runBrowser(ctx, client, dirURI, f, browser.WithVersionsKey(versionsKey))
 	}
 
 	// Directory => browser mode
@@ -393,7 +394,7 @@ func runMetaEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flag
 	return nil
 }
 
-func runBrowser(ctx context.Context, client storage.Client, u *uri.URI, f *flags) error {
+func runBrowser(ctx context.Context, client storage.Client, u *uri.URI, f *flags, extraOpts ...browser.RunOption) error {
 	b := browser.New(client, u, os.Stdin, os.Stderr, version)
 	editFn := func(selected *uri.URI) error {
 		return runFileEdit(ctx, client, selected, f)
@@ -407,33 +408,13 @@ func runBrowser(ctx context.Context, client storage.Client, u *uri.URI, f *flags
 	restoreVersionFn := func(selected *uri.URI, versionID string) error {
 		return runRestoreVersion(ctx, client, selected, versionID)
 	}
-	return b.Run(ctx, editFn,
+	opts := []browser.RunOption{
 		browser.WithEditMeta(editMetaFn),
 		browser.WithDownload(downloadFn),
 		browser.WithRestoreVersion(restoreVersionFn),
-	)
-}
-
-func runBrowserWithVersions(ctx context.Context, client storage.Client, u *uri.URI, f *flags, versionsKey string) error {
-	b := browser.New(client, u, os.Stdin, os.Stderr, version)
-	editFn := func(selected *uri.URI) error {
-		return runFileEdit(ctx, client, selected, f)
 	}
-	editMetaFn := func(selected *uri.URI) error {
-		return runMetaEdit(ctx, client, selected, f)
-	}
-	downloadFn := func(selected *uri.URI, dir string) error {
-		return runDownload(ctx, client, selected, dir)
-	}
-	restoreVersionFn := func(selected *uri.URI, versionID string) error {
-		return runRestoreVersion(ctx, client, selected, versionID)
-	}
-	return b.Run(ctx, editFn,
-		browser.WithEditMeta(editMetaFn),
-		browser.WithDownload(downloadFn),
-		browser.WithRestoreVersion(restoreVersionFn),
-		browser.WithVersionsKey(versionsKey),
-	)
+	opts = append(opts, extraOpts...)
+	return b.Run(ctx, editFn, opts...)
 }
 
 func runRestoreVersion(ctx context.Context, client storage.Client, u *uri.URI, versionID string) error {
