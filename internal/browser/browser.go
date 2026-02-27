@@ -89,6 +89,7 @@ func (b *Browser) Run(ctx context.Context, editFn EditFunc, opts ...RunOption) e
 		client:     b.client,
 		ctx:        ctx,
 		bucket:     b.bucket,
+		prefix:     b.prefix,
 		scheme:     string(b.scheme),
 		browser:    b,
 		editFn:     editFn,

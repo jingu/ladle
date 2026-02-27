@@ -53,9 +53,9 @@ const (
 	menuEdit menuAction = iota
 	menuEditMeta
 	menuDownload
-	menuDelete
 	menuCopy
 	menuMove
+	menuDelete
 )
 
 var menuItems = []struct {
@@ -156,6 +156,7 @@ type model struct {
 	client     storage.Client
 	ctx        context.Context // stored because bubbletea Cmd closures need it
 	bucket     string
+	prefix     string
 	scheme     string
 	browser    *Browser
 	editFn     EditFunc
@@ -201,7 +202,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case actionDoneMsg:
 		m.loading = false
-		if msg.err != nil {
+		if msg.err != nil && msg.message != "" {
+			m.message = msg.message + " (refresh failed: " + apierror.Classify(msg.err).Error() + ")"
+		} else if msg.err != nil {
 			m.message = apierror.Classify(msg.err).Error()
 		} else {
 			m.message = msg.message
@@ -217,8 +220,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.header = msg.header
 		m.canGoUp = msg.canGoUp
 		m.bucket = msg.bucket
-		m.browser.bucket = msg.bucket
-		m.browser.prefix = msg.prefix
+		m.prefix = msg.prefix
 		m.cursor = 0
 		m.filtering = false
 		m.filterText = ""
@@ -525,7 +527,6 @@ func (m model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m model) executeMenuAction(action menuAction) (tea.Model, tea.Cmd) {
 	m.menuOpen = false
 	target := m.menuTarget
-	m.menuTarget = nil
 
 	if target == nil {
 		return m, nil
@@ -533,6 +534,7 @@ func (m model) executeMenuAction(action menuAction) (tea.Model, tea.Cmd) {
 
 	switch action {
 	case menuEdit:
+		m.menuTarget = nil
 		cmd, err := m.execEdit(target.entry.key)
 		if err != nil {
 			m.message = apierror.Classify(err).Error()
@@ -541,6 +543,7 @@ func (m model) executeMenuAction(action menuAction) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case menuEditMeta:
+		m.menuTarget = nil
 		cmd, err := m.execEditMeta(target.entry.key)
 		if err != nil {
 			m.message = apierror.Classify(err).Error()
@@ -553,10 +556,10 @@ func (m model) executeMenuAction(action menuAction) (tea.Model, tea.Cmd) {
 		m.inputPrompt = "Download to directory"
 		m.inputText = "./"
 		m.inputAction = menuDownload
-		m.menuTarget = target // keep target for input completion
 		return m, nil
 
 	case menuDelete:
+		m.menuTarget = nil
 		key := target.entry.key
 		m.confirmMode = true
 		m.confirmPrompt = fmt.Sprintf("Delete %s? (y/N)", key)
@@ -568,7 +571,6 @@ func (m model) executeMenuAction(action menuAction) (tea.Model, tea.Cmd) {
 		m.inputPrompt = "Copy to path (same bucket)"
 		m.inputText = target.entry.key
 		m.inputAction = menuCopy
-		m.menuTarget = target
 		return m, nil
 
 	case menuMove:
@@ -576,7 +578,6 @@ func (m model) executeMenuAction(action menuAction) (tea.Model, tea.Cmd) {
 		m.inputPrompt = "Move to path (same bucket)"
 		m.inputText = target.entry.key
 		m.inputAction = menuMove
-		m.menuTarget = target
 		return m, nil
 	}
 	return m, nil
@@ -626,7 +627,7 @@ func (m model) deleteObject(key string) tea.Cmd {
 	client := m.client
 	ctx := m.ctx
 	bucket := m.bucket
-	prefix := m.browser.prefix
+	prefix := m.prefix
 	b := m.browser
 	return func() tea.Msg {
 		if err := client.Delete(ctx, bucket, key); err != nil {
@@ -645,7 +646,7 @@ func (m model) copyObject(srcKey, dstKey string) tea.Cmd {
 	client := m.client
 	ctx := m.ctx
 	bucket := m.bucket
-	prefix := m.browser.prefix
+	prefix := m.prefix
 	b := m.browser
 	return func() tea.Msg {
 		if err := client.Copy(ctx, bucket, srcKey, dstKey); err != nil {
@@ -663,7 +664,7 @@ func (m model) moveObject(srcKey, dstKey string) tea.Cmd {
 	client := m.client
 	ctx := m.ctx
 	bucket := m.bucket
-	prefix := m.browser.prefix
+	prefix := m.prefix
 	b := m.browser
 	return func() tea.Msg {
 		if err := client.Copy(ctx, bucket, srcKey, dstKey); err != nil {
@@ -883,7 +884,7 @@ func (m model) navigateUp() tea.Cmd {
 	b := m.browser
 	ctx := m.ctx
 	bucket := m.bucket
-	prefix := b.prefix
+	prefix := m.prefix
 	return func() tea.Msg {
 		newBucket, newPrefix := b.computeUp(bucket, prefix)
 		nodes, header, canGoUp, err := b.buildViewFor(ctx, newBucket, newPrefix)
