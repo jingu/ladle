@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -77,7 +78,9 @@ Examples:
   ladle --meta s3://bucket/path/to/file.html
   ladle --profile production s3://bucket/path/to/file.html
   ladle s3://bucket/path/to/              # file browser mode
-  ladle s3://                             # bucket list browser`,
+  ladle s3://                             # bucket list browser
+  ladle s3://bucket/path/to/file.html > local.html   # download to local file
+  ladle s3://bucket/path/to/file.html < local.html   # upload from local file`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.MaximumNArgs(1),
@@ -153,7 +156,27 @@ func run(cmd *cobra.Command, args []string, f *flags) error {
 		}
 	}
 
-	// File editing
+	// Check for pipe/redirect
+	stdoutPiped := !isTerminal(os.Stdout)
+	stdinPiped := !isTerminal(os.Stdin)
+
+	if stdoutPiped && stdinPiped {
+		return fmt.Errorf("both stdin and stdout are redirected; this is not supported")
+	}
+	if stdoutPiped {
+		if f.meta {
+			return fmt.Errorf("--meta cannot be used with stdout redirect")
+		}
+		return runPipeOut(ctx, client, u)
+	}
+	if stdinPiped {
+		if f.meta {
+			return fmt.Errorf("--meta cannot be used with stdin redirect")
+		}
+		return runPipeIn(ctx, client, u, f)
+	}
+
+	// File editing (interactive)
 	if f.meta {
 		return runMetaEdit(ctx, client, u, f)
 	}
@@ -389,6 +412,106 @@ func runDownload(ctx context.Context, client storage.Client, u *uri.URI, dir str
 	}
 	sp.StopWithMessage(fmt.Sprintf("✓ Downloaded to %s", destPath))
 	return f.Close()
+}
+
+func isTerminal(f *os.File) bool {
+	fi, err := f.Stat()
+	if err != nil {
+		return true
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
+}
+
+func runPipeOut(ctx context.Context, client storage.Client, u *uri.URI) error {
+	sp := spinner.New(os.Stderr, fmt.Sprintf("Downloading %s ...", u))
+	sp.Start()
+	if err := client.Download(ctx, u.Bucket, u.Key, os.Stdout); err != nil {
+		sp.Stop()
+		return err
+	}
+	sp.StopWithMessage(fmt.Sprintf("✓ Downloaded %s", u))
+	return nil
+}
+
+func runPipeIn(ctx context.Context, client storage.Client, u *uri.URI, f *flags) error {
+	// Read all stdin
+	newContent, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return fmt.Errorf("reading stdin: %w", err)
+	}
+	modified := string(newContent)
+
+	// Binary check
+	if editor.IsBinary(newContent) && !f.force {
+		return fmt.Errorf("stdin appears to contain binary data (use --force to override)")
+	}
+
+	// Download current content for diff
+	var original string
+	var buf strings.Builder
+	sp := spinner.New(os.Stderr, fmt.Sprintf("Downloading %s for diff ...", u))
+	sp.Start()
+	if err := client.Download(ctx, u.Bucket, u.Key, &buf); err != nil {
+		sp.Stop()
+		classified := apierror.Classify(err)
+		var ae *apierror.Error
+		if !errors.As(classified, &ae) || ae.Kind != apierror.KindNotFound {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "Object %s does not exist — will create new.\n", u)
+	} else {
+		sp.StopWithMessage(fmt.Sprintf("✓ Downloaded %s", u))
+		original = buf.String()
+	}
+
+	// Check for changes
+	diffText := diff.Generate(original, modified, "remote", "stdin")
+	if diffText == "" {
+		fmt.Fprintln(os.Stderr, "No changes detected. Skipping upload.")
+		return nil
+	}
+
+	// Show diff
+	fmt.Fprintf(os.Stderr, "\nFile: %s\n\n", u)
+	diff.Print(os.Stderr, diffText)
+
+	if f.dryRun {
+		fmt.Fprintln(os.Stderr, "\n(dry-run: upload skipped)")
+		return nil
+	}
+
+	// Confirm (stdin is used for file content, so read from /dev/tty)
+	if !f.yes {
+		tty, err := os.Open("/dev/tty")
+		if err != nil {
+			return fmt.Errorf("cannot open terminal for confirmation (use --yes to skip): %w", err)
+		}
+		defer tty.Close()
+		if !confirm(tty, os.Stderr, "Upload changes?") {
+			fmt.Fprintln(os.Stderr, "Upload cancelled.")
+			return nil
+		}
+	}
+
+	// Detect content type
+	ct := contenttype.Detect(u.Key)
+
+	// Get existing metadata to preserve it
+	existingMeta, err := client.HeadObject(ctx, u.Bucket, u.Key)
+	if err != nil {
+		existingMeta = &storage.ObjectMetadata{}
+	}
+	existingMeta.ContentType = ct
+
+	// Upload
+	sp = spinner.New(os.Stderr, fmt.Sprintf("Uploading to %s ...", u))
+	sp.Start()
+	if err := client.Upload(ctx, u.Bucket, u.Key, strings.NewReader(modified), existingMeta); err != nil {
+		sp.Stop()
+		return err
+	}
+	sp.StopWithMessage(fmt.Sprintf("✓ Uploaded to %s", u))
+	return nil
 }
 
 const bucketCacheTTL = 5 * time.Minute
