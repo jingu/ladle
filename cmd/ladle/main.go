@@ -79,8 +79,10 @@ Examples:
   ladle --profile production s3://bucket/path/to/file.html
   ladle s3://bucket/path/to/              # file browser mode
   ladle s3://                             # bucket list browser
-  ladle s3://bucket/path/to/file.html > local.html   # download to local file
-  ladle s3://bucket/path/to/file.html < local.html   # upload from local file`,
+  ladle s3://bucket/path/to/file.html > local.html        # download to local file
+  ladle s3://bucket/path/to/file.html < local.html        # upload from local file
+  ladle --meta s3://bucket/path/to/file.html > meta.yaml  # export metadata
+  ladle --meta s3://bucket/path/to/file.html < meta.yaml  # import metadata`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.MaximumNArgs(1),
@@ -165,13 +167,13 @@ func run(cmd *cobra.Command, args []string, f *flags) error {
 	}
 	if stdoutPiped {
 		if f.meta {
-			return fmt.Errorf("--meta cannot be used with stdout redirect")
+			return runMetaPipeOut(ctx, client, u)
 		}
 		return runPipeOut(ctx, client, u)
 	}
 	if stdinPiped {
 		if f.meta {
-			return fmt.Errorf("--meta cannot be used with stdin redirect")
+			return runMetaPipeIn(ctx, client, u, f)
 		}
 		return runPipeIn(ctx, client, u, f)
 	}
@@ -511,6 +513,93 @@ func runPipeIn(ctx context.Context, client storage.Client, u *uri.URI, f *flags)
 		return err
 	}
 	sp.StopWithMessage(fmt.Sprintf("✓ Uploaded to %s", u))
+	return nil
+}
+
+func runMetaPipeOut(ctx context.Context, client storage.Client, u *uri.URI) error {
+	sp := spinner.New(os.Stderr, fmt.Sprintf("Fetching metadata for %s ...", u))
+	sp.Start()
+	objMeta, err := client.HeadObject(ctx, u.Bucket, u.Key)
+	if err != nil {
+		sp.Stop()
+		return err
+	}
+	sp.StopWithMessage(fmt.Sprintf("✓ Fetched metadata for %s", u))
+
+	yamlBytes, err := meta.Marshal(u.String(), objMeta)
+	if err != nil {
+		return err
+	}
+
+	_, err = os.Stdout.Write(yamlBytes)
+	return err
+}
+
+func runMetaPipeIn(ctx context.Context, client storage.Client, u *uri.URI, f *flags) error {
+	// Read YAML from stdin
+	newYAML, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return fmt.Errorf("reading stdin: %w", err)
+	}
+
+	// Validate YAML by parsing
+	newMeta, err := meta.Unmarshal(newYAML)
+	if err != nil {
+		return err
+	}
+
+	// Fetch current metadata for diff
+	sp := spinner.New(os.Stderr, fmt.Sprintf("Fetching metadata for %s ...", u))
+	sp.Start()
+	objMeta, err := client.HeadObject(ctx, u.Bucket, u.Key)
+	if err != nil {
+		sp.Stop()
+		return err
+	}
+	sp.StopWithMessage(fmt.Sprintf("✓ Fetched metadata for %s", u))
+
+	originalYAML, err := meta.Marshal(u.String(), objMeta)
+	if err != nil {
+		return err
+	}
+
+	// Check for changes
+	diffText := diff.Generate(string(originalYAML), string(newYAML), "remote", "stdin")
+	if diffText == "" {
+		fmt.Fprintln(os.Stderr, "No changes detected. Skipping update.")
+		return nil
+	}
+
+	// Show diff
+	fmt.Fprintf(os.Stderr, "\nMetadata: %s\n\n", u)
+	diff.Print(os.Stderr, diffText)
+
+	if f.dryRun {
+		fmt.Fprintln(os.Stderr, "\n(dry-run: update skipped)")
+		return nil
+	}
+
+	// Confirm via /dev/tty
+	if !f.yes {
+		tty, err := os.Open("/dev/tty")
+		if err != nil {
+			return fmt.Errorf("cannot open terminal for confirmation (use --yes to skip): %w", err)
+		}
+		defer tty.Close()
+		if !confirm(tty, os.Stderr, "Update metadata?") {
+			fmt.Fprintln(os.Stderr, "Update cancelled.")
+			return nil
+		}
+	}
+
+	// Update metadata
+	sp = spinner.New(os.Stderr, fmt.Sprintf("Updating metadata for %s ...", u))
+	sp.Start()
+	if err := client.UpdateMetadata(ctx, u.Bucket, u.Key, newMeta); err != nil {
+		sp.Stop()
+		return err
+	}
+	sp.StopWithMessage(fmt.Sprintf("✓ Updated metadata for %s", u))
 	return nil
 }
 
