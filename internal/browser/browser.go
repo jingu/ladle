@@ -24,6 +24,10 @@ type EditMetaFunc func(u *uri.URI) error
 // It receives the parsed URI and a local directory path.
 type DownloadFunc func(u *uri.URI, dir string) error
 
+// RestoreVersionFunc is called to restore a specific version of an object.
+// It receives the parsed URI and the version ID to restore.
+type RestoreVersionFunc func(u *uri.URI, versionID string) error
+
 // Browser provides an interactive file browser.
 type Browser struct {
 	client            storage.Client
@@ -54,8 +58,10 @@ func New(client storage.Client, u *uri.URI, in io.Reader, out io.Writer, version
 type RunOption func(*runOptions)
 
 type runOptions struct {
-	editMetaFn EditMetaFunc
-	downloadFn DownloadFunc
+	editMetaFn       EditMetaFunc
+	downloadFn       DownloadFunc
+	restoreVersionFn RestoreVersionFunc
+	versionsKey      string
 }
 
 // WithEditMeta sets the callback for editing metadata.
@@ -66,6 +72,16 @@ func WithEditMeta(fn EditMetaFunc) RunOption {
 // WithDownload sets the callback for downloading files.
 func WithDownload(fn DownloadFunc) RunOption {
 	return func(o *runOptions) { o.downloadFn = fn }
+}
+
+// WithRestoreVersion sets the callback for restoring a specific version.
+func WithRestoreVersion(fn RestoreVersionFunc) RunOption {
+	return func(o *runOptions) { o.restoreVersionFn = fn }
+}
+
+// WithVersionsKey sets the object key to show version history for immediately on startup.
+func WithVersionsKey(key string) RunOption {
+	return func(o *runOptions) { o.versionsKey = key }
 }
 
 // Run starts the interactive browser. It runs a single TUI program.
@@ -82,19 +98,22 @@ func (b *Browser) Run(ctx context.Context, editFn EditFunc, opts ...RunOption) e
 	}
 
 	m := model{
-		nodes:      nodes,
-		header:     header,
-		version:    b.version,
-		canGoUp:    canGoUp,
-		client:     b.client,
-		ctx:        ctx,
-		bucket:     b.bucket,
-		prefix:     b.prefix,
-		scheme:     string(b.scheme),
-		browser:    b,
-		editFn:     editFn,
-		editMetaFn: ro.editMetaFn,
-		downloadFn: ro.downloadFn,
+		nodes:            nodes,
+		header:           header,
+		version:          b.version,
+		canGoUp:          canGoUp,
+		client:           b.client,
+		ctx:              ctx,
+		bucket:           b.bucket,
+		prefix:           b.prefix,
+		scheme:           string(b.scheme),
+		browser:          b,
+		editFn:           editFn,
+		editMetaFn:       ro.editMetaFn,
+		downloadFn:       ro.downloadFn,
+		restoreVersionFn: ro.restoreVersionFn,
+		initVersionKey:   ro.versionsKey,
+		loading:          ro.versionsKey != "",
 	}
 
 	p := tea.NewProgram(m, tea.WithInput(b.in), tea.WithOutput(b.out))

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -40,6 +41,7 @@ func main() {
 
 type flags struct {
 	meta           bool
+	versions       bool
 	editorCmd      string
 	profile        string
 	region         string
@@ -82,7 +84,8 @@ Examples:
   ladle s3://bucket/path/to/file.html > local.html        # download to local file
   ladle s3://bucket/path/to/file.html < local.html        # upload from local file
   ladle --meta s3://bucket/path/to/file.html > meta.yaml  # export metadata
-  ladle --meta s3://bucket/path/to/file.html < meta.yaml  # import metadata`,
+  ladle --meta s3://bucket/path/to/file.html < meta.yaml  # import metadata
+  ladle --versions s3://bucket/path/to/file.html          # version history`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.MaximumNArgs(1),
@@ -92,6 +95,7 @@ Examples:
 	}
 
 	cmd.Flags().BoolVar(&f.meta, "meta", false, "Edit object metadata instead of file content")
+	cmd.Flags().BoolVar(&f.versions, "versions", false, "Show version history for a file")
 	cmd.Flags().StringVar(&f.editorCmd, "editor", "", "Editor command (overrides LADLE_EDITOR/EDITOR/VISUAL)")
 	cmd.Flags().StringVar(&f.profile, "profile", "", "AWS named profile")
 	cmd.Flags().StringVar(&f.region, "region", "", "AWS region")
@@ -138,6 +142,24 @@ func run(cmd *cobra.Command, args []string, f *flags) error {
 	}
 	if f.completePath {
 		return handleCompletePath(ctx, client, u)
+	}
+
+	// --versions: show version history directly
+	if f.versions {
+		if u.IsDirectory() {
+			return fmt.Errorf("--versions requires a file URI (not a directory)")
+		}
+		versionsKey := u.Key
+		// Adjust URI to parent directory for browser, then open versions view
+		parentKey := path.Dir(u.Key) + "/"
+		if parentKey == "./" {
+			parentKey = ""
+		}
+		dirURI, err := uri.Parse(fmt.Sprintf("%s://%s/%s", u.Scheme, u.Bucket, parentKey))
+		if err != nil {
+			return err
+		}
+		return runBrowser(ctx, client, dirURI, f, browser.WithVersionsKey(versionsKey))
 	}
 
 	// Directory => browser mode
@@ -373,7 +395,7 @@ func runMetaEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flag
 	return nil
 }
 
-func runBrowser(ctx context.Context, client storage.Client, u *uri.URI, f *flags) error {
+func runBrowser(ctx context.Context, client storage.Client, u *uri.URI, f *flags, extraOpts ...browser.RunOption) error {
 	b := browser.New(client, u, os.Stdin, os.Stderr, version)
 	editFn := func(selected *uri.URI) error {
 		return runFileEdit(ctx, client, selected, f)
@@ -384,10 +406,82 @@ func runBrowser(ctx context.Context, client storage.Client, u *uri.URI, f *flags
 	downloadFn := func(selected *uri.URI, dir string) error {
 		return runDownload(ctx, client, selected, dir)
 	}
-	return b.Run(ctx, editFn,
+	restoreVersionFn := func(selected *uri.URI, versionID string) error {
+		return runRestoreVersion(ctx, client, selected, versionID)
+	}
+	opts := []browser.RunOption{
 		browser.WithEditMeta(editMetaFn),
 		browser.WithDownload(downloadFn),
-	)
+		browser.WithRestoreVersion(restoreVersionFn),
+	}
+	opts = append(opts, extraOpts...)
+	return b.Run(ctx, editFn, opts...)
+}
+
+func runRestoreVersion(ctx context.Context, client storage.Client, u *uri.URI, versionID string) error {
+	// Download current version
+	var currentBuf strings.Builder
+	sp := spinner.New(os.Stderr, fmt.Sprintf("Downloading current %s ...", u))
+	sp.Start()
+	if err := client.Download(ctx, u.Bucket, u.Key, &currentBuf); err != nil {
+		sp.Stop()
+		return err
+	}
+	sp.StopWithMessage(fmt.Sprintf("✓ Downloaded current %s", u))
+	current := currentBuf.String()
+
+	// Download selected version
+	var selectedBuf strings.Builder
+	sp = spinner.New(os.Stderr, fmt.Sprintf("Downloading version %s ...", versionID))
+	sp.Start()
+	if err := client.DownloadVersion(ctx, u.Bucket, u.Key, versionID, &selectedBuf); err != nil {
+		sp.Stop()
+		return err
+	}
+	sp.StopWithMessage(fmt.Sprintf("✓ Downloaded version %s", versionID))
+	selected := selectedBuf.String()
+
+	// Binary check
+	isBinary := editor.IsBinary([]byte(selected))
+	if isBinary {
+		fmt.Fprintf(os.Stderr, "Warning: %s appears to be a binary file. Diff is not shown.\n", u)
+	}
+
+	if !isBinary {
+		// Check for differences
+		diffText := diff.Generate(current, selected, "current", "version "+versionID)
+		if diffText == "" {
+			fmt.Fprintln(os.Stderr, "No differences between current and selected version.")
+			return nil
+		}
+
+		// Show diff
+		fmt.Fprintf(os.Stderr, "\nFile: %s\n\n", u)
+		diff.Print(os.Stderr, diffText)
+	}
+
+	// Confirm
+	if !confirm(os.Stdin, os.Stderr, "Restore this version?") {
+		fmt.Fprintln(os.Stderr, "Restore cancelled.")
+		return nil
+	}
+
+	// Get existing metadata to preserve it
+	existingMeta, err := client.HeadObject(ctx, u.Bucket, u.Key)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not fetch metadata: %v\n", err)
+		existingMeta = &storage.ObjectMetadata{}
+	}
+
+	// Upload restored content
+	sp = spinner.New(os.Stderr, fmt.Sprintf("Restoring %s ...", u))
+	sp.Start()
+	if err := client.Upload(ctx, u.Bucket, u.Key, strings.NewReader(selected), existingMeta); err != nil {
+		sp.Stop()
+		return err
+	}
+	sp.StopWithMessage(fmt.Sprintf("✓ Restored %s to version %s", u, versionID))
+	return nil
 }
 
 func runDownload(ctx context.Context, client storage.Client, u *uri.URI, dir string) error {
