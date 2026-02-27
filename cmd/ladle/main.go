@@ -59,8 +59,18 @@ func newRootCmd() *cobra.Command {
 		Use:     "ladle <uri>",
 		Short:   "Edit cloud storage files with your local editor",
 		Version: version,
-		Long: `ladle downloads a file from cloud storage, opens it in your editor,
-and uploads the changes back when you save and close the editor.
+		Long: `  ██
+  ██
+  ██       _     ____   _      _____
+  ██      / \   |  _ \ | |    | ____|
+  ██     / _ \  | | | || |    |  _|
+  ██    / ___ \ | |_| || |___ | |___
+ ▄██▄  /_/   \_\|____/ |_____||_____|
+██████
+ ▀████▀  ` + version + `
+
+Edit cloud storage files directly from your terminal.
+Download, edit in your favorite editor, diff, confirm, upload — all in one shot.
 
 Examples:
   ladle s3://bucket/path/to/file.html
