@@ -1045,17 +1045,141 @@ func TestContextMenuDeleteAction(t *testing.T) {
 		menuCursor: 5, // Delete
 	}
 
+	// Selecting Delete should open confirm dialog, not delete immediately
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(model)
 
 	if m.menuOpen {
-		t.Error("menu should be closed after action")
+		t.Error("menu should be closed after selecting delete")
+	}
+	if !m.confirmMode {
+		t.Fatal("expected confirm mode to be active")
+	}
+	if m.loading {
+		t.Error("should not be loading yet (waiting for confirmation)")
+	}
+	if cmd != nil {
+		t.Error("no command should be returned before confirmation")
+	}
+	if !strings.Contains(m.confirmPrompt, "file.txt") {
+		t.Errorf("confirm prompt should mention the file, got %q", m.confirmPrompt)
+	}
+}
+
+func TestDeleteConfirmYes(t *testing.T) {
+	mock := storage.NewMockClient()
+	mock.PutObject("test", "file.txt", []byte("hello"), nil)
+
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	u, _ := uri.Parse("s3://test/")
+	b := New(mock, u, nil, nil, "test")
+	m := model{
+		nodes:      nodes,
+		cursor:     0,
+		header:     "s3://test",
+		version:    "test",
+		client:     mock,
+		ctx:        context.Background(),
+		bucket:     "test",
+		scheme:     "s3",
+		browser:    b,
+		editFn:     func(u *uri.URI) error { return nil },
+		editMetaFn: func(u *uri.URI) error { return nil },
+		menuOpen:   true,
+		menuTarget: nodes[0],
+		menuCursor: 5, // Delete
+	}
+
+	// Open confirm dialog
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(model)
+
+	// Press "y" to confirm
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m = updated.(model)
+
+	if m.confirmMode {
+		t.Error("confirm mode should be closed after confirmation")
 	}
 	if !m.loading {
 		t.Error("expected loading state during delete")
 	}
 	if cmd == nil {
 		t.Fatal("expected a command for delete")
+	}
+}
+
+func TestDeleteConfirmNo(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.menuOpen = true
+	m.menuTarget = nodes[0]
+	m.menuCursor = 5 // Delete
+
+	// Open confirm dialog
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(model)
+
+	// Press "n" to cancel
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	m = updated.(model)
+
+	if m.confirmMode {
+		t.Error("confirm mode should be closed")
+	}
+	if m.loading {
+		t.Error("should not be loading after cancel")
+	}
+}
+
+func TestDeleteConfirmEsc(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.menuOpen = true
+	m.menuTarget = nodes[0]
+	m.menuCursor = 5 // Delete
+
+	// Open confirm dialog
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(model)
+
+	// Press Esc to cancel
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	m = updated.(model)
+
+	if m.confirmMode {
+		t.Error("confirm mode should be closed")
+	}
+}
+
+func TestDeleteConfirmEnterDefaultNo(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.menuOpen = true
+	m.menuTarget = nodes[0]
+	m.menuCursor = 5 // Delete
+
+	// Open confirm dialog
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(model)
+
+	// Press Enter without typing "y" -> default No
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(model)
+
+	if m.confirmMode {
+		t.Error("confirm mode should be closed")
+	}
+	if m.loading {
+		t.Error("should not be loading after default cancel")
 	}
 }
 

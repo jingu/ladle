@@ -143,6 +143,11 @@ type model struct {
 	inputText   string
 	inputAction menuAction
 
+	// Confirm dialog state (for delete)
+	confirmMode   bool
+	confirmPrompt string
+	confirmAction func() (model, tea.Cmd)
+
 	quitting     bool
 	loading      bool
 	spinnerFrame int
@@ -220,6 +225,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Confirm dialog handling (delete confirmation)
+	if m.confirmMode {
+		return m.handleConfirmKey(msg)
+	}
+
 	// Input mode handling (download dir, copy/move destination)
 	if m.inputMode {
 		return m.handleInputKey(msg)
@@ -443,6 +453,34 @@ func (m model) handleMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEscape:
+		m.confirmMode = false
+		m.confirmAction = nil
+		return m, nil
+	case tea.KeyCtrlC:
+		m.quitting = true
+		return m, tea.Quit
+	case tea.KeyRunes:
+		ch := string(msg.Runes)
+		if ch == "y" || ch == "Y" {
+			return m.confirmAction()
+		}
+		// Any other key (including "n", "N") cancels
+		m.confirmMode = false
+		m.confirmAction = nil
+		return m, nil
+	}
+	// Enter without typing "y" = cancel (default No)
+	if msg.Type == tea.KeyEnter {
+		m.confirmMode = false
+		m.confirmAction = nil
+		return m, nil
+	}
+	return m, nil
+}
+
 func (m model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEscape:
@@ -512,8 +550,17 @@ func (m model) executeMenuAction(action menuAction) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case menuDelete:
-		m.loading = true
-		return m, tea.Batch(m.startLoading(), m.deleteObject(target.entry.key))
+		key := target.entry.key
+		m.menuOpen = false
+		m.confirmMode = true
+		m.confirmPrompt = fmt.Sprintf("Delete %s? (y/N)", key)
+		m.confirmAction = func() (model, tea.Cmd) {
+			m.confirmMode = false
+			m.confirmAction = nil
+			m.loading = true
+			return m, tea.Batch(m.startLoading(), m.deleteObject(key))
+		}
+		return m, nil
 
 	case menuCopy:
 		m.inputMode = true
@@ -1124,6 +1171,11 @@ func (m model) View() string {
 		b.WriteString("\n")
 	}
 
+	// Confirm dialog
+	if m.confirmMode {
+		b.WriteString("\n  " + styleInput.Render(m.confirmPrompt) + "\n")
+	}
+
 	// Input line
 	if m.inputMode {
 		b.WriteString("\n  " + styleInput.Render(m.inputPrompt+": "+m.inputText) + "▏\n")
@@ -1142,7 +1194,9 @@ func (m model) View() string {
 	}
 
 	var help string
-	if m.menuOpen {
+	if m.confirmMode {
+		help = "  y confirm  N/esc cancel"
+	} else if m.menuOpen {
 		help = "  ↑/↓ navigate  enter select  esc/← close"
 	} else if m.inputMode {
 		help = "  tab complete  enter confirm  esc cancel"
