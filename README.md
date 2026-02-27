@@ -25,7 +25,7 @@ No manual download/upload, no web console, no scripts.
 
 - **One command to edit** — `ladle s3://bucket/file` opens, edits, diffs, and uploads
 - **Metadata too** — `ladle --meta s3://bucket/file` edits ContentType, CacheControl, etc. as YAML
-- **Any editor** — vim, VS Code, emacs, nano — set `EDITOR` or `--editor`
+- **Any terminal editor** — vim, emacs, nano — set `EDITOR` or `--editor`
 - **Safe by default** — colored diff + confirmation before every upload
 - **Browse & filter** — interactive TUI browser with vim-style `/` search
 
