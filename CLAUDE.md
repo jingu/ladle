@@ -66,7 +66,9 @@ All storage operations go through `internal/storage.Client` interface. This is t
 
 **Meta pipe in** (`runMetaPipeIn`): Read YAML from stdin -> parse/validate -> HeadObject for diff -> diff -> confirm via `/dev/tty` -> UpdateMetadata.
 
-**Browser** (`runBrowser`): Bubbletea TUI program. `model` (Elm architecture) handles tree state, cursor, filter. `Browser` struct manages S3 listing and navigation. Edit suspends TUI via `tea.Exec`, resumes after.
+**Browser** (`runBrowser`): Bubbletea TUI program. `model` (Elm architecture) handles tree state, cursor, filter. `Browser` struct manages S3 listing and navigation. Edit suspends TUI via `tea.Exec`, resumes after. `runBrowser` accepts variadic `RunOption` for optional features like `WithVersionsKey`.
+
+**Version history** (`--versions`): `--versions s3://bucket/file` opens the browser at the parent directory and immediately enters the version view. Uses `WithVersionsKey` RunOption → `initVersionKey` in model → `Init()` fires `loadVersions` → `versionsLoadedMsg` auto-sets `versionTarget`. Version view shows a two-pane layout: version list (left) with content preview (right). `Enter` restores via `tea.Exec` (suspends TUI, runs `runRestoreVersion`).
 
 Terminal detection uses `os.File.Stat()` with `ModeCharDevice` to distinguish pipe/redirect from interactive terminal. When stdin is piped, confirmation prompts read from `/dev/tty` instead (`--yes` to skip).
 

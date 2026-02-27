@@ -84,7 +84,8 @@ Examples:
   ladle s3://bucket/path/to/file.html > local.html        # download to local file
   ladle s3://bucket/path/to/file.html < local.html        # upload from local file
   ladle --meta s3://bucket/path/to/file.html > meta.yaml  # export metadata
-  ladle --meta s3://bucket/path/to/file.html < meta.yaml  # import metadata`,
+  ladle --meta s3://bucket/path/to/file.html < meta.yaml  # import metadata
+  ladle --versions s3://bucket/path/to/file.html          # version history`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.MaximumNArgs(1),

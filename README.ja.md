@@ -162,6 +162,7 @@ $ ladle s3://myapp/
   │   Download to... │
   │   Copy to...     │
   │   Move to...     │
+  │   Versions       │
   │   Delete         │
   ╰──────────────────╯
 
@@ -175,7 +176,21 @@ $ ladle s3://myapp/
 | Download to... | ローカルディレクトリにダウンロード（タブ補完対応） |
 | Copy to... | 同一バケット内の別キーにコピー |
 | Move to... | 同一バケット内の別キーに移動 |
+| Versions | バージョン履歴を表示し、過去のバージョンに復元（S3バージョニング） |
 | Delete | オブジェクトを削除（確認あり） |
+
+### バージョン履歴
+
+S3オブジェクトの過去のバージョンを表示・復元できます（バケットでS3バージョニングが有効である必要があります）。
+
+```bash
+# バージョン履歴を直接表示
+ladle --versions s3://myapp/config.json
+```
+
+バージョンビューでは左側にバージョン一覧、右側にコンテンツのプレビューが表示されます。`↑/↓` でバージョンを選択、`Ctrl-d/Ctrl-u` でプレビューをスクロール、`Enter` で選択したバージョンに復元できます。
+
+ブラウザのコンテキストメニューから **Versions** を選択してアクセスすることもできます。
 
 ## インストール
 
@@ -209,6 +224,7 @@ ladle --no-sign-request s3://public-bucket/file.html
 | フラグ | 短縮 | 説明 |
 |--------|------|------|
 | `--meta` | | ファイル本体ではなくメタデータを編集 |
+| `--versions` | | ファイルのバージョン履歴を表示（S3バージョニング） |
 | `--editor` | | エディタコマンドを指定（環境変数より優先） |
 | `--yes` | `-y` | 確認プロンプトをスキップ |
 | `--dry-run` | | アップロードせずにdiffのみ表示 |
@@ -245,7 +261,6 @@ ladle --install-completion fish > ~/.config/fish/completions/ladle.fish
 ## 今後の予定
 
 - GCS (`gs://`), Azure Blob (`az://`), Cloudflare R2 (`r2://`) バックエンド
-- `--version-id` によるS3バージョニング対応
 - 複数ファイルの一括編集
 - `ladle compare` による2ファイルのリモートdiff
 
