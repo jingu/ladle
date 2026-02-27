@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/jingu/ladle/internal/apierror"
 	"github.com/jingu/ladle/internal/browser"
 	"github.com/jingu/ladle/internal/completion"
@@ -29,7 +30,9 @@ var version = "dev"
 
 func main() {
 	if err := newRootCmd().Execute(); err != nil {
-		fmt.Fprintf(os.Stderr, "\033[31mError: %s\033[0m\n", err)
+		r := lipgloss.NewRenderer(os.Stderr)
+		errStyle := r.NewStyle().Foreground(lipgloss.Color("9"))
+		fmt.Fprintln(os.Stderr, errStyle.Render(fmt.Sprintf("Error: %s", err)))
 		os.Exit(1)
 	}
 }
@@ -365,12 +368,13 @@ func runDownload(ctx context.Context, client storage.Client, u *uri.URI, dir str
 	if err != nil {
 		return fmt.Errorf("creating file %s: %w", destPath, err)
 	}
-	defer func() { _ = f.Close() }()
 
 	sp := spinner.New(os.Stderr, fmt.Sprintf("Downloading %s ...", u))
 	sp.Start()
 	if err := client.Download(ctx, u.Bucket, u.Key, f); err != nil {
 		sp.Stop()
+		_ = f.Close()
+		_ = os.Remove(destPath)
 		return err
 	}
 	sp.StopWithMessage(fmt.Sprintf("✓ Downloaded to %s", destPath))

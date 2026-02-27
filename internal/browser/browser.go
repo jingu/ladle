@@ -104,9 +104,15 @@ func (b *Browser) Run(ctx context.Context, editFn EditFunc, opts ...RunOption) e
 	return nil
 }
 
-// buildView returns the initial nodes, header, and canGoUp for the current state.
+// buildView returns the nodes, header, and canGoUp for the current Browser state.
 func (b *Browser) buildView(ctx context.Context) ([]*node, string, bool, error) {
-	if b.bucket == "" {
+	return b.buildViewFor(ctx, b.bucket, b.prefix)
+}
+
+// buildViewFor returns nodes, header, and canGoUp for the given bucket/prefix
+// without reading or modifying Browser fields. Safe to call from goroutines.
+func (b *Browser) buildViewFor(ctx context.Context, bucket, prefix string) ([]*node, string, bool, error) {
+	if bucket == "" {
 		// Bucket list mode
 		buckets, err := b.client.ListBuckets(ctx)
 		if err != nil {
@@ -121,19 +127,19 @@ func (b *Browser) buildView(ctx context.Context) ([]*node, string, bool, error) 
 	}
 
 	// Object list mode
-	nodes, err := b.loadEntries(ctx, b.bucket, b.prefix, 0)
+	nodes, err := b.loadEntries(ctx, bucket, prefix, 0)
 	if err != nil {
 		return nil, "", false, fmt.Errorf("listing objects: %w", err)
 	}
-	if len(nodes) == 0 && b.prefix != "" {
-		return nil, "", false, fmt.Errorf("directory not found: %s://%s/%s", b.scheme, b.bucket, b.prefix)
+	if len(nodes) == 0 && prefix != "" {
+		return nil, "", false, fmt.Errorf("directory not found: %s://%s/%s", b.scheme, bucket, prefix)
 	}
 
-	header := fmt.Sprintf("%s://%s", b.scheme, b.bucket)
-	if b.prefix != "" {
-		header += "/" + strings.TrimSuffix(b.prefix, "/")
+	header := fmt.Sprintf("%s://%s", b.scheme, bucket)
+	if prefix != "" {
+		header += "/" + strings.TrimSuffix(prefix, "/")
 	}
-	canGoUp := b.prefix != "" || b.bucketListEnabled
+	canGoUp := prefix != "" || b.bucketListEnabled
 	return nodes, header, canGoUp, nil
 }
 
@@ -164,22 +170,22 @@ func (b *Browser) loadEntries(ctx context.Context, bucket, prefix string, depth 
 	return nodes, nil
 }
 
-func (b *Browser) goUp() {
-	if b.prefix == "" {
+// computeUp computes the parent bucket/prefix without modifying Browser.
+func (b *Browser) computeUp(bucket, prefix string) (newBucket, newPrefix string) {
+	if prefix == "" {
 		if b.bucketListEnabled {
-			b.bucket = ""
+			return "", ""
 		}
-		return
+		return bucket, ""
 	}
 	// Remove trailing slash
-	p := strings.TrimSuffix(b.prefix, "/")
+	p := strings.TrimSuffix(prefix, "/")
 	// Go to parent
 	parent := path.Dir(p)
 	if parent == "." {
-		b.prefix = ""
-	} else {
-		b.prefix = parent + "/"
+		return bucket, ""
 	}
+	return bucket, parent + "/"
 }
 
 func formatSize(size int64) string {

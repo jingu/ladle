@@ -1341,11 +1341,11 @@ func TestViewWithInputMode(t *testing.T) {
 	}
 	m := newTestModel(nodes, false)
 	m.inputMode = true
-	m.inputPrompt = "Copy to path"
+	m.inputPrompt = "Copy to path (same bucket)"
 	m.inputText = "new/path"
 
 	view := m.View()
-	if !strings.Contains(view, "Copy to path") {
+	if !strings.Contains(view, "Copy to path (same bucket)") {
 		t.Error("expected input prompt in view")
 	}
 	if !strings.Contains(view, "new/path") {

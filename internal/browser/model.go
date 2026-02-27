@@ -93,6 +93,7 @@ type navigatedMsg struct {
 	header  string
 	canGoUp bool
 	bucket  string
+	prefix  string
 	err     error
 }
 
@@ -144,9 +145,9 @@ type model struct {
 	inputAction menuAction
 
 	// Confirm dialog state (for delete)
-	confirmMode   bool
-	confirmPrompt string
-	confirmAction func() (model, tea.Cmd)
+	confirmMode       bool
+	confirmPrompt     string
+	pendingDeleteKey  string
 
 	quitting     bool
 	loading      bool
@@ -216,6 +217,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.header = msg.header
 		m.canGoUp = msg.canGoUp
 		m.bucket = msg.bucket
+		m.browser.bucket = msg.bucket
+		m.browser.prefix = msg.prefix
 		m.cursor = 0
 		m.filtering = false
 		m.filterText = ""
@@ -457,7 +460,7 @@ func (m model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEscape:
 		m.confirmMode = false
-		m.confirmAction = nil
+		m.pendingDeleteKey = ""
 		return m, nil
 	case tea.KeyCtrlC:
 		m.quitting = true
@@ -465,17 +468,21 @@ func (m model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyRunes:
 		ch := string(msg.Runes)
 		if ch == "y" || ch == "Y" {
-			return m.confirmAction()
+			key := m.pendingDeleteKey
+			m.confirmMode = false
+			m.pendingDeleteKey = ""
+			m.loading = true
+			return m, tea.Batch(m.startLoading(), m.deleteObject(key))
 		}
 		// Any other key (including "n", "N") cancels
 		m.confirmMode = false
-		m.confirmAction = nil
+		m.pendingDeleteKey = ""
 		return m, nil
 	}
 	// Enter without typing "y" = cancel (default No)
 	if msg.Type == tea.KeyEnter {
 		m.confirmMode = false
-		m.confirmAction = nil
+		m.pendingDeleteKey = ""
 		return m, nil
 	}
 	return m, nil
@@ -551,20 +558,14 @@ func (m model) executeMenuAction(action menuAction) (tea.Model, tea.Cmd) {
 
 	case menuDelete:
 		key := target.entry.key
-		m.menuOpen = false
 		m.confirmMode = true
 		m.confirmPrompt = fmt.Sprintf("Delete %s? (y/N)", key)
-		m.confirmAction = func() (model, tea.Cmd) {
-			m.confirmMode = false
-			m.confirmAction = nil
-			m.loading = true
-			return m, tea.Batch(m.startLoading(), m.deleteObject(key))
-		}
+		m.pendingDeleteKey = key
 		return m, nil
 
 	case menuCopy:
 		m.inputMode = true
-		m.inputPrompt = "Copy to path"
+		m.inputPrompt = "Copy to path (same bucket)"
 		m.inputText = target.entry.key
 		m.inputAction = menuCopy
 		m.menuTarget = target
@@ -572,7 +573,7 @@ func (m model) executeMenuAction(action menuAction) (tea.Model, tea.Cmd) {
 
 	case menuMove:
 		m.inputMode = true
-		m.inputPrompt = "Move to path"
+		m.inputPrompt = "Move to path (same bucket)"
 		m.inputText = target.entry.key
 		m.inputAction = menuMove
 		m.menuTarget = target
@@ -625,17 +626,18 @@ func (m model) deleteObject(key string) tea.Cmd {
 	client := m.client
 	ctx := m.ctx
 	bucket := m.bucket
+	prefix := m.browser.prefix
 	b := m.browser
 	return func() tea.Msg {
 		if err := client.Delete(ctx, bucket, key); err != nil {
 			return actionDoneMsg{err: err}
 		}
 		// Rebuild the view to reflect the deletion
-		nodes, header, canGoUp, err := b.buildView(ctx)
+		nodes, header, canGoUp, err := b.buildViewFor(ctx, bucket, prefix)
 		if err != nil {
-			return actionDoneMsg{message: "Deleted " + key, err: nil}
+			return actionDoneMsg{message: "Deleted " + key, err: err}
 		}
-		return navigatedMsg{nodes: nodes, header: header, canGoUp: canGoUp, bucket: bucket}
+		return navigatedMsg{nodes: nodes, header: header, canGoUp: canGoUp, bucket: bucket, prefix: prefix}
 	}
 }
 
@@ -643,16 +645,17 @@ func (m model) copyObject(srcKey, dstKey string) tea.Cmd {
 	client := m.client
 	ctx := m.ctx
 	bucket := m.bucket
+	prefix := m.browser.prefix
 	b := m.browser
 	return func() tea.Msg {
 		if err := client.Copy(ctx, bucket, srcKey, dstKey); err != nil {
 			return actionDoneMsg{err: err}
 		}
-		nodes, header, canGoUp, err := b.buildView(ctx)
+		nodes, header, canGoUp, err := b.buildViewFor(ctx, bucket, prefix)
 		if err != nil {
-			return actionDoneMsg{message: "Copied to " + dstKey}
+			return actionDoneMsg{message: "Copied to " + dstKey, err: err}
 		}
-		return navigatedMsg{nodes: nodes, header: header, canGoUp: canGoUp, bucket: bucket}
+		return navigatedMsg{nodes: nodes, header: header, canGoUp: canGoUp, bucket: bucket, prefix: prefix}
 	}
 }
 
@@ -660,6 +663,7 @@ func (m model) moveObject(srcKey, dstKey string) tea.Cmd {
 	client := m.client
 	ctx := m.ctx
 	bucket := m.bucket
+	prefix := m.browser.prefix
 	b := m.browser
 	return func() tea.Msg {
 		if err := client.Copy(ctx, bucket, srcKey, dstKey); err != nil {
@@ -668,11 +672,11 @@ func (m model) moveObject(srcKey, dstKey string) tea.Cmd {
 		if err := client.Delete(ctx, bucket, srcKey); err != nil {
 			return actionDoneMsg{err: fmt.Errorf("copied but failed to delete source: %w", err)}
 		}
-		nodes, header, canGoUp, err := b.buildView(ctx)
+		nodes, header, canGoUp, err := b.buildViewFor(ctx, bucket, prefix)
 		if err != nil {
-			return actionDoneMsg{message: "Moved to " + dstKey}
+			return actionDoneMsg{message: "Moved to " + dstKey, err: err}
 		}
-		return navigatedMsg{nodes: nodes, header: header, canGoUp: canGoUp, bucket: bucket}
+		return navigatedMsg{nodes: nodes, header: header, canGoUp: canGoUp, bucket: bucket, prefix: prefix}
 	}
 }
 
@@ -874,26 +878,26 @@ func (m model) execEdit(key string) (tea.Cmd, error) {
 	}), nil
 }
 
-// navigateUp triggers goUp on the browser and rebuilds the view.
+// navigateUp computes the parent and rebuilds the view.
 func (m model) navigateUp() tea.Cmd {
 	b := m.browser
 	ctx := m.ctx
+	bucket := m.bucket
+	prefix := b.prefix
 	return func() tea.Msg {
-		b.goUp()
-		nodes, header, canGoUp, err := b.buildView(ctx)
-		return navigatedMsg{nodes: nodes, header: header, canGoUp: canGoUp, bucket: b.bucket, err: err}
+		newBucket, newPrefix := b.computeUp(bucket, prefix)
+		nodes, header, canGoUp, err := b.buildViewFor(ctx, newBucket, newPrefix)
+		return navigatedMsg{nodes: nodes, header: header, canGoUp: canGoUp, bucket: newBucket, prefix: newPrefix, err: err}
 	}
 }
 
-// navigateToBucket sets the bucket and rebuilds the view.
+// navigateToBucket rebuilds the view for the given bucket.
 func (m model) navigateToBucket(bucket string) tea.Cmd {
 	b := m.browser
 	ctx := m.ctx
 	return func() tea.Msg {
-		b.bucket = bucket
-		b.prefix = ""
-		nodes, header, canGoUp, err := b.buildView(ctx)
-		return navigatedMsg{nodes: nodes, header: header, canGoUp: canGoUp, bucket: b.bucket, err: err}
+		nodes, header, canGoUp, err := b.buildViewFor(ctx, bucket, "")
+		return navigatedMsg{nodes: nodes, header: header, canGoUp: canGoUp, bucket: bucket, prefix: "", err: err}
 	}
 }
 

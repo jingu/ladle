@@ -9,7 +9,7 @@ import (
 	"github.com/jingu/ladle/internal/uri"
 )
 
-func TestGoUp(t *testing.T) {
+func TestComputeUp(t *testing.T) {
 	tests := []struct {
 		name              string
 		bucket            string
@@ -26,13 +26,13 @@ func TestGoUp(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			b := &Browser{bucket: tt.bucket, prefix: tt.prefix, bucketListEnabled: tt.bucketListEnabled}
-			b.goUp()
-			if b.bucket != tt.expectedBucket {
-				t.Errorf("goUp bucket: got %q, want %q", b.bucket, tt.expectedBucket)
+			b := &Browser{bucketListEnabled: tt.bucketListEnabled}
+			gotBucket, gotPrefix := b.computeUp(tt.bucket, tt.prefix)
+			if gotBucket != tt.expectedBucket {
+				t.Errorf("computeUp bucket: got %q, want %q", gotBucket, tt.expectedBucket)
 			}
-			if b.prefix != tt.expectedPrefix {
-				t.Errorf("goUp prefix: got %q, want %q", b.prefix, tt.expectedPrefix)
+			if gotPrefix != tt.expectedPrefix {
+				t.Errorf("computeUp prefix: got %q, want %q", gotPrefix, tt.expectedPrefix)
 			}
 		})
 	}
