@@ -58,7 +58,17 @@ All storage operations go through `internal/storage.Client` interface. This is t
 
 **Metadata edit** (`runMetaEdit`): HeadObject -> YAML marshal -> temp file -> editor -> diff -> confirm -> CopyObject (UpdateMetadata)
 
+**Pipe out** (`runPipeOut`): Download -> stdout. No diff/confirm. Triggered when stdout is not a terminal.
+
+**Pipe in** (`runPipeIn`): Read stdin -> download current for diff (NotFound = new object) -> binary check -> diff -> confirm via `/dev/tty` -> upload. Triggered when stdin is not a terminal.
+
+**Meta pipe out** (`runMetaPipeOut`): HeadObject -> YAML marshal -> stdout.
+
+**Meta pipe in** (`runMetaPipeIn`): Read YAML from stdin -> parse/validate -> HeadObject for diff -> diff -> confirm via `/dev/tty` -> UpdateMetadata.
+
 **Browser** (`runBrowser`): Bubbletea TUI program. `model` (Elm architecture) handles tree state, cursor, filter. `Browser` struct manages S3 listing and navigation. Edit suspends TUI via `tea.Exec`, resumes after.
+
+Terminal detection uses `os.File.Stat()` with `ModeCharDevice` to distinguish pipe/redirect from interactive terminal. When stdin is piped, confirmation prompts read from `/dev/tty` instead (`--yes` to skip).
 
 ## Code Style
 
