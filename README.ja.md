@@ -27,6 +27,7 @@ ladle s3://mybucket/config.json
 - **メタデータも同様** — `ladle --meta s3://bucket/file` でContentType、CacheControl等をYAMLで編集
 - **好きなターミナルエディタで** — vim, emacs, nano — `EDITOR` 環境変数か `--editor` で指定
 - **安全設計** — アップロード前にカラー差分 + 確認プロンプト
+- **パイプ & リダイレクト** — シェルパイプラインやスクリプトでも自動検出で動作
 - **ブラウズ & フィルタ** — vim風 `/` 検索付きインタラクティブTUIブラウザ
 
 ## 操作イメージ
