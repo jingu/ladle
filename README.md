@@ -112,7 +112,43 @@ $ ladle s3://myapp/
 - `↑/↓` navigate, `←/→` expand/collapse directories
 - `/` to filter — incremental search across expanded tree
 - `Enter` to edit a file, then return to the browser
+- `→` on a file to open the context menu
 - `-` to go up a directory
+
+#### Context menu
+
+Press `→` on a file to open the context menu:
+
+```
+  s3://myapp
+
+  📁 config/
+  📁 static/
+> 📝 index.html              2.1 KB  2026-02-19 02:08
+  📝 readme.md               1.3 KB  2026-02-19 02:08
+  ..
+
+  ╭──────────────────╮
+  │ index.html       │
+  │ > Edit           │
+  │   Edit metadata  │
+  │   Download to... │
+  │   Copy to...     │
+  │   Move to...     │
+  │   Delete         │
+  ╰──────────────────╯
+
+  ↑/↓ navigate  enter select  esc/← close
+```
+
+| Action | Description |
+|--------|-------------|
+| Edit | Open the file in your editor |
+| Edit metadata | Edit ContentType, CacheControl, etc. as YAML |
+| Download to... | Download to a local directory (tab completion supported) |
+| Copy to... | Copy to another key in the same bucket |
+| Move to... | Move to another key in the same bucket |
+| Delete | Delete the object (with confirmation) |
 
 ## Installation
 
