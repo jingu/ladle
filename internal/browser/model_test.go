@@ -1043,7 +1043,7 @@ func TestContextMenuDeleteAction(t *testing.T) {
 		editMetaFn: func(u *uri.URI) error { return nil },
 		menuOpen:   true,
 		menuTarget: nodes[0],
-		menuCursor: 5, // Delete
+		menuCursor: 6, // Delete
 	}
 
 	// Selecting Delete should open confirm dialog, not delete immediately
@@ -1090,7 +1090,7 @@ func TestDeleteConfirmYes(t *testing.T) {
 		editMetaFn: func(u *uri.URI) error { return nil },
 		menuOpen:   true,
 		menuTarget: nodes[0],
-		menuCursor: 5, // Delete
+		menuCursor: 6, // Delete
 	}
 
 	// Open confirm dialog
@@ -1119,7 +1119,7 @@ func TestDeleteConfirmNo(t *testing.T) {
 	m := newTestModel(nodes, false)
 	m.menuOpen = true
 	m.menuTarget = nodes[0]
-	m.menuCursor = 5 // Delete
+	m.menuCursor = 6 // Delete
 
 	// Open confirm dialog
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -1144,7 +1144,7 @@ func TestDeleteConfirmEsc(t *testing.T) {
 	m := newTestModel(nodes, false)
 	m.menuOpen = true
 	m.menuTarget = nodes[0]
-	m.menuCursor = 5 // Delete
+	m.menuCursor = 6 // Delete
 
 	// Open confirm dialog
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -1166,7 +1166,7 @@ func TestDeleteConfirmEnterDefaultNo(t *testing.T) {
 	m := newTestModel(nodes, false)
 	m.menuOpen = true
 	m.menuTarget = nodes[0]
-	m.menuCursor = 5 // Delete
+	m.menuCursor = 6 // Delete
 
 	// Open confirm dialog
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -1991,5 +1991,452 @@ func TestVersionMode_VersionsLoadedError(t *testing.T) {
 	}
 	if rm.message == "" {
 		t.Error("should have error message")
+	}
+}
+
+func TestVersionPreview_CursorMoveTriggersPreview(t *testing.T) {
+	mock := storage.NewMockClient()
+	now := time.Now()
+	mock.PutObjectVersioned("test", "file.txt", "v2", []byte("new content"), nil, now, false)
+	mock.PutObjectVersioned("test", "file.txt", "v1", []byte("old content"), nil, now.Add(-time.Hour), false)
+
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	u, _ := uri.Parse("s3://test/")
+	b := New(mock, u, nil, nil, "test")
+	m := model{
+		nodes:   nodes,
+		client:  mock,
+		ctx:     context.Background(),
+		bucket:  "test",
+		scheme:  "s3",
+		browser: b,
+		editFn:  func(u *uri.URI) error { return nil },
+	}
+	m.versionMode = true
+	m.versionCursor = 0
+	m.versionTarget = nodes[0]
+	m.versionList = []storage.ObjectVersion{
+		{VersionID: "v2", IsLatest: true, Size: 100, LastModified: now},
+		{VersionID: "v1", Size: 90, LastModified: now.Add(-time.Hour)},
+	}
+
+	// Move down — should trigger preview for v1
+	result, cmd := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	rm := result.(model)
+	if rm.versionCursor != 1 {
+		t.Errorf("cursor: got %d, want 1", rm.versionCursor)
+	}
+	if rm.previewVersion != "v1" {
+		t.Errorf("previewVersion: got %q, want %q", rm.previewVersion, "v1")
+	}
+	if !rm.previewLoading {
+		t.Error("should be loading preview")
+	}
+	if cmd == nil {
+		t.Error("expected a command to load preview")
+	}
+}
+
+func TestVersionPreview_PreviewMsgSetsContent(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.versionMode = true
+	m.previewVersion = "v1"
+	m.previewLoading = true
+
+	msg := versionPreviewMsg{
+		versionID: "v1",
+		content:   "hello world\nline 2",
+	}
+	result, _ := m.Update(msg)
+	rm := result.(model)
+	if rm.previewContent != "hello world\nline 2" {
+		t.Errorf("previewContent: got %q", rm.previewContent)
+	}
+	if rm.previewLoading {
+		t.Error("should not be loading after msg")
+	}
+	if rm.previewError != "" {
+		t.Errorf("previewError: got %q", rm.previewError)
+	}
+}
+
+func TestVersionPreview_SizeExceedsLimit(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.versionMode = true
+	m.versionCursor = 0
+	m.versionTarget = nodes[0]
+	m.versionList = []storage.ObjectVersion{
+		{VersionID: "v2", IsLatest: true, Size: 100},
+		{VersionID: "v1", Size: previewMaxBytes + 1},
+	}
+
+	// Move to v1 (oversized)
+	result, cmd := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	rm := result.(model)
+	if rm.previewError != "File too large to preview (>512KB)" {
+		t.Errorf("previewError: got %q", rm.previewError)
+	}
+	if rm.previewLoading {
+		t.Error("should not be loading for oversized file")
+	}
+	if cmd != nil {
+		t.Error("should not return a command for oversized file")
+	}
+}
+
+func TestVersionPreview_DeleteMarker(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.versionMode = true
+	m.versionCursor = 0
+	m.versionTarget = nodes[0]
+	m.versionList = []storage.ObjectVersion{
+		{VersionID: "v2", IsLatest: true, Size: 100},
+		{VersionID: "dm1", IsDeleteMarker: true},
+	}
+
+	// Move to delete marker
+	result, cmd := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	rm := result.(model)
+	if rm.previewError != "Delete marker" {
+		t.Errorf("previewError: got %q", rm.previewError)
+	}
+	if rm.previewContent != "" {
+		t.Error("previewContent should be empty for delete marker")
+	}
+	if cmd != nil {
+		t.Error("should not return a command for delete marker")
+	}
+}
+
+func TestVersionPreview_ViewContainsPreview(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.versionMode = true
+	m.versionCursor = 0
+	m.termWidth = 120
+	m.termHeight = 40
+	now := time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC)
+	m.versionList = []storage.ObjectVersion{
+		{VersionID: "v2", IsLatest: true, Size: 100, LastModified: now},
+		{VersionID: "v1", Size: 90, LastModified: now.Add(-time.Hour)},
+	}
+	m.versionTarget = nodes[0]
+	m.previewVersion = "v2"
+	m.previewContent = "preview line 1\npreview line 2"
+
+	view := m.View()
+	if !strings.Contains(view, "Preview") {
+		t.Error("view should contain 'Preview' header")
+	}
+	if !strings.Contains(view, "preview line 1") {
+		t.Error("view should contain preview content")
+	}
+	if !strings.Contains(view, "Versions:") {
+		t.Error("view should contain 'Versions:' header")
+	}
+}
+
+func TestVersionPreview_NarrowTerminalNoPreview(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.versionMode = true
+	m.versionCursor = 0
+	m.termWidth = 50 // too narrow
+	m.termHeight = 40
+	m.versionList = []storage.ObjectVersion{
+		{VersionID: "v2", IsLatest: true, Size: 100},
+	}
+	m.versionTarget = nodes[0]
+	m.previewContent = "should not appear"
+
+	view := m.View()
+	if strings.Contains(view, "Preview") {
+		t.Error("narrow terminal should not show preview pane")
+	}
+	if !strings.Contains(view, "Versions:") {
+		t.Error("version list should still be shown")
+	}
+}
+
+func TestVersionPreview_VersionsLoadedTriggersInitialPreview(t *testing.T) {
+	mock := storage.NewMockClient()
+	now := time.Now()
+	mock.PutObjectVersioned("test", "file.txt", "v2", []byte("new"), nil, now, false)
+	mock.PutObjectVersioned("test", "file.txt", "v1", []byte("old"), nil, now.Add(-time.Hour), false)
+
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	u, _ := uri.Parse("s3://test/")
+	b := New(mock, u, nil, nil, "test")
+	m := model{
+		nodes:         nodes,
+		client:        mock,
+		ctx:           context.Background(),
+		bucket:        "test",
+		scheme:        "s3",
+		browser:       b,
+		editFn:        func(u *uri.URI) error { return nil },
+		loading:       true,
+		versionTarget: nodes[0],
+	}
+
+	msg := versionsLoadedMsg{
+		versions: []storage.ObjectVersion{
+			{VersionID: "v2", IsLatest: true, Size: 100, LastModified: now},
+			{VersionID: "v1", Size: 90, LastModified: now.Add(-time.Hour)},
+		},
+	}
+
+	result, cmd := m.Update(msg)
+	rm := result.(model)
+	if !rm.versionMode {
+		t.Error("should be in version mode")
+	}
+	if rm.previewVersion != "v2" {
+		t.Errorf("previewVersion: got %q, want %q", rm.previewVersion, "v2")
+	}
+	if !rm.previewLoading {
+		t.Error("should be loading initial preview")
+	}
+	if cmd == nil {
+		t.Error("expected a command to load initial preview")
+	}
+}
+
+func TestVersionPreview_EscClearsPreviewState(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.versionMode = true
+	m.versionList = []storage.ObjectVersion{
+		{VersionID: "v2", IsLatest: true},
+		{VersionID: "v1"},
+	}
+	m.versionTarget = nodes[0]
+	m.previewContent = "some content"
+	m.previewVersion = "v2"
+	m.previewError = ""
+	m.previewScroll = 5
+
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	rm := result.(model)
+	if rm.previewContent != "" {
+		t.Error("previewContent should be cleared on esc")
+	}
+	if rm.previewVersion != "" {
+		t.Error("previewVersion should be cleared on esc")
+	}
+	if rm.previewScroll != 0 {
+		t.Error("previewScroll should be reset on esc")
+	}
+}
+
+func TestVersionPreview_ScrollKeys(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.versionMode = true
+	m.versionCursor = 0
+	// Need enough versions so pageSize (= len(versionList)) allows scrolling
+	// with 30 content lines. Use 10 versions -> pageSize=10, half=5.
+	m.versionList = make([]storage.ObjectVersion, 10)
+	m.versionList[0] = storage.ObjectVersion{VersionID: "v1", IsLatest: true, Size: 100}
+	for i := 1; i < 10; i++ {
+		m.versionList[i] = storage.ObjectVersion{VersionID: fmt.Sprintf("v%d", i+1), Size: 100}
+	}
+	m.versionTarget = nodes[0]
+	m.previewVersion = "v1"
+
+	// Create content with many lines
+	var lines []string
+	for i := 0; i < 30; i++ {
+		lines = append(lines, fmt.Sprintf("line %d", i))
+	}
+	m.previewContent = strings.Join(lines, "\n")
+
+	// Scroll down with ctrl+d
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+	rm := result.(model)
+	if rm.previewScroll == 0 {
+		t.Error("previewScroll should have increased after ctrl+d")
+	}
+
+	// Scroll up with ctrl+u
+	result, _ = rm.Update(tea.KeyMsg{Type: tea.KeyCtrlU})
+	rm = result.(model)
+	if rm.previewScroll != 0 {
+		t.Errorf("previewScroll should be 0 after ctrl+u, got %d", rm.previewScroll)
+	}
+}
+
+func TestVersionList_ScrollsWithCursor(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.versionMode = true
+	m.termHeight = 25 // small terminal
+	m.termWidth = 120
+	m.versionTarget = nodes[0]
+
+	// Create 30 versions (more than fits in terminal)
+	now := time.Now()
+	for i := 0; i < 30; i++ {
+		v := storage.ObjectVersion{
+			VersionID:    fmt.Sprintf("ver%03d", i),
+			Size:         100,
+			LastModified: now.Add(-time.Duration(i) * time.Hour),
+		}
+		if i == 0 {
+			v.IsLatest = true
+		}
+		m.versionList = append(m.versionList, v)
+	}
+	m.versionCursor = 0
+
+	// Move cursor to the bottom
+	for i := 0; i < 29; i++ {
+		result, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		m = result.(model)
+	}
+	if m.versionCursor != 29 {
+		t.Fatalf("cursor should be 29, got %d", m.versionCursor)
+	}
+
+	// The view should still render without panic and contain the cursor item
+	view := m.View()
+	if !strings.Contains(view, "ver029") {
+		t.Error("view should contain the version at cursor (ver029)")
+	}
+	// Should show "more above" indicator since we scrolled down
+	if !strings.Contains(view, "more above") {
+		t.Error("view should show 'more above' when scrolled down")
+	}
+}
+
+func TestInitVersionKey_ReturnsCmd(t *testing.T) {
+	m := newTestModel(nil, false)
+	m.initVersionKey = "path/to/file.txt"
+
+	cmd := m.Init()
+	if cmd == nil {
+		t.Fatal("Init() should return a command when initVersionKey is set")
+	}
+}
+
+func TestInitVersionKey_Empty_ReturnsNil(t *testing.T) {
+	m := newTestModel(nil, false)
+
+	cmd := m.Init()
+	if cmd != nil {
+		t.Fatal("Init() should return nil when initVersionKey is empty")
+	}
+}
+
+func TestVersionsLoadedMsg_WithInitVersionKey(t *testing.T) {
+	m := newTestModel(nil, false)
+	m.initVersionKey = "path/to/file.txt"
+
+	msg := versionsLoadedMsg{
+		versions: []storage.ObjectVersion{
+			{VersionID: "v2", IsLatest: true, Size: 100},
+			{VersionID: "v1", IsLatest: false, Size: 80},
+		},
+	}
+	updated, _ := m.Update(msg)
+	result := updated.(model)
+
+	if !result.versionMode {
+		t.Error("expected versionMode to be true")
+	}
+	if result.versionTarget == nil {
+		t.Fatal("expected versionTarget to be set")
+	}
+	if result.versionTarget.entry.name != "file.txt" {
+		t.Errorf("expected versionTarget name 'file.txt', got %q", result.versionTarget.entry.name)
+	}
+	if result.versionTarget.entry.key != "path/to/file.txt" {
+		t.Errorf("expected versionTarget key 'path/to/file.txt', got %q", result.versionTarget.entry.key)
+	}
+	if result.initVersionKey != "" {
+		t.Error("expected initVersionKey to be cleared after handling")
+	}
+}
+
+func TestVersionsLoadedMsg_WithInitVersionKey_NoHistory(t *testing.T) {
+	m := newTestModel(nil, false)
+	m.initVersionKey = "path/to/file.txt"
+
+	msg := versionsLoadedMsg{
+		versions: []storage.ObjectVersion{
+			{VersionID: "v1", IsLatest: true, Size: 100},
+		},
+	}
+	updated, _ := m.Update(msg)
+	result := updated.(model)
+
+	if result.versionMode {
+		t.Error("expected versionMode to be false when only 1 version")
+	}
+	if result.message != "No version history" {
+		t.Errorf("expected message 'No version history', got %q", result.message)
+	}
+	if result.initVersionKey != "" {
+		t.Error("expected initVersionKey to be cleared")
+	}
+}
+
+func TestVersionsLoadedMsg_WithInitVersionKey_Error(t *testing.T) {
+	m := newTestModel(nil, false)
+	m.initVersionKey = "path/to/file.txt"
+
+	msg := versionsLoadedMsg{
+		err: fmt.Errorf("access denied"),
+	}
+	updated, _ := m.Update(msg)
+	result := updated.(model)
+
+	if result.versionMode {
+		t.Error("expected versionMode to be false on error")
+	}
+	if result.initVersionKey != "" {
+		t.Error("expected initVersionKey to be cleared on error")
+	}
+}
+
+func TestVersionList_HeightRespected(t *testing.T) {
+	m := newTestModel(nil, false)
+	m.termHeight = 25
+
+	// 30 versions, overhead = 18, so max = 25-18 = 7
+	m.versionList = make([]storage.ObjectVersion, 30)
+	h := m.versionListHeight()
+	if h != 7 {
+		t.Errorf("versionListHeight: got %d, want 7 (termHeight=25, overhead=18)", h)
+	}
+
+	// When all versions fit, return full count
+	m.versionList = make([]storage.ObjectVersion, 3)
+	h = m.versionListHeight()
+	if h != 3 {
+		t.Errorf("versionListHeight: got %d, want 3", h)
 	}
 }

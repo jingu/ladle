@@ -57,6 +57,12 @@ func New(ctx context.Context, opts Options) (*S3Client, error) {
 		})
 	}
 
+	// Suppress "Response has no supported checksum" WARN for objects
+	// uploaded without checksums (common in older or third-party S3-compatible stores).
+	s3Opts = append(s3Opts, func(o *s3.Options) {
+		o.DisableLogOutputChecksumValidationSkipped = true
+	})
+
 	client := s3.NewFromConfig(cfg, s3Opts...)
 	return &S3Client{client: client}, nil
 }

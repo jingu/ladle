@@ -61,6 +61,7 @@ type runOptions struct {
 	editMetaFn       EditMetaFunc
 	downloadFn       DownloadFunc
 	restoreVersionFn RestoreVersionFunc
+	versionsKey      string
 }
 
 // WithEditMeta sets the callback for editing metadata.
@@ -76,6 +77,11 @@ func WithDownload(fn DownloadFunc) RunOption {
 // WithRestoreVersion sets the callback for restoring a specific version.
 func WithRestoreVersion(fn RestoreVersionFunc) RunOption {
 	return func(o *runOptions) { o.restoreVersionFn = fn }
+}
+
+// WithVersionsKey sets the object key to show version history for immediately on startup.
+func WithVersionsKey(key string) RunOption {
+	return func(o *runOptions) { o.versionsKey = key }
 }
 
 // Run starts the interactive browser. It runs a single TUI program.
@@ -106,6 +112,8 @@ func (b *Browser) Run(ctx context.Context, editFn EditFunc, opts ...RunOption) e
 		editMetaFn:       ro.editMetaFn,
 		downloadFn:       ro.downloadFn,
 		restoreVersionFn: ro.restoreVersionFn,
+		initVersionKey:   ro.versionsKey,
+		loading:          ro.versionsKey != "",
 	}
 
 	p := tea.NewProgram(m, tea.WithInput(b.in), tea.WithOutput(b.out))

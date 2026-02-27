@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -10,10 +11,14 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/jingu/ladle/internal/apierror"
+	"github.com/jingu/ladle/internal/editor"
 	"github.com/jingu/ladle/internal/storage"
 	"github.com/jingu/ladle/internal/uri"
 )
+
+const previewMaxBytes = 512 * 1024 // 512KB
 
 // entry represents a single item in the tree.
 type entry struct {
@@ -68,8 +73,8 @@ var menuItems = []struct {
 	{menuDownload, "Download to..."},
 	{menuCopy, "Copy to..."},
 	{menuMove, "Move to..."},
-	{menuDelete, "Delete"},
 	{menuVersions, "Versions"},
+	{menuDelete, "Delete"},
 }
 
 // tabCompleteMsg carries completion candidates back to the input handler.
@@ -93,6 +98,13 @@ type actionDoneMsg struct {
 type versionsLoadedMsg struct {
 	versions []storage.ObjectVersion
 	err      error
+}
+
+// versionPreviewMsg carries the downloaded preview content back to Update.
+type versionPreviewMsg struct {
+	versionID string
+	content   string
+	err       error
 }
 
 // navigatedMsg is sent after navigation (goUp / bucket select) rebuilds the view.
@@ -135,6 +147,7 @@ type model struct {
 
 	canGoUp      bool      // whether backspace/.. should go up
 	termHeight   int       // terminal height for scrolling
+	termWidth    int       // terminal width for layout
 	message      string    // status message (e.g. error from last action)
 	lastEscTime  time.Time // for double-Esc quit
 
@@ -163,6 +176,15 @@ type model struct {
 	versionList   []storage.ObjectVersion
 	versionTarget *node
 
+	// Version preview state
+	previewContent string
+	previewVersion string // versionID being displayed (avoid duplicate fetch)
+	previewScroll  int
+	previewLoading bool
+	previewError   string
+
+	initVersionKey string // set by --versions flag; triggers version loading on Init()
+
 	quitting     bool
 	loading      bool
 	spinnerFrame int
@@ -180,6 +202,9 @@ type model struct {
 }
 
 func (m model) Init() tea.Cmd {
+	if m.initVersionKey != "" {
+		return tea.Batch(m.startLoading(), m.loadVersions(m.initVersionKey))
+	}
 	return nil
 }
 
@@ -187,6 +212,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.termHeight = msg.Height
+		m.termWidth = msg.Width
 		return m, nil
 	case tea.KeyMsg:
 		m.message = "" // clear message on any key
@@ -225,20 +251,47 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.message = msg.message
 		}
 		return m, nil
+	case versionPreviewMsg:
+		if !m.versionMode || msg.versionID != m.previewVersion {
+			return m, nil
+		}
+		m.previewLoading = false
+		if msg.err != nil {
+			m.previewError = msg.err.Error()
+			m.previewContent = ""
+		} else {
+			m.previewContent = msg.content
+			m.previewError = ""
+		}
+		m.previewScroll = 0
+		return m, nil
 	case versionsLoadedMsg:
 		m.loading = false
 		if msg.err != nil {
 			m.message = apierror.Classify(msg.err).Error()
+			m.initVersionKey = ""
 			return m, nil
 		}
 		if len(msg.versions) <= 1 {
 			m.message = "No version history"
+			m.initVersionKey = ""
 			return m, nil
+		}
+		// Auto-set versionTarget when launched via --versions
+		if m.initVersionKey != "" && m.versionTarget == nil {
+			name := filepath.Base(m.initVersionKey)
+			m.versionTarget = &node{entry: entry{name: name, key: m.initVersionKey}}
+			m.initVersionKey = ""
 		}
 		m.versionMode = true
 		m.versionCursor = 0
 		m.versionList = msg.versions
-		return m, nil
+		m.previewContent = ""
+		m.previewVersion = ""
+		m.previewError = ""
+		m.previewScroll = 0
+		m, cmd := m.triggerPreview()
+		return m, cmd
 	case navigatedMsg:
 		m.loading = false
 		if msg.err != nil {
@@ -912,17 +965,24 @@ func (m model) handleVersionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.versionMode = false
 		m.versionList = nil
 		m.versionTarget = nil
+		m.previewContent = ""
+		m.previewVersion = ""
+		m.previewError = ""
+		m.previewLoading = false
+		m.previewScroll = 0
 		return m, nil
 	case tea.KeyUp:
 		if m.versionCursor > 0 {
 			m.versionCursor--
 		}
-		return m, nil
+		m, cmd := m.triggerPreview()
+		return m, cmd
 	case tea.KeyDown:
 		if m.versionCursor < len(m.versionList)-1 {
 			m.versionCursor++
 		}
-		return m, nil
+		m, cmd := m.triggerPreview()
+		return m, cmd
 	case tea.KeyEnter:
 		if len(m.versionList) == 0 {
 			return m, nil
@@ -963,12 +1023,96 @@ func (m model) handleVersionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.versionCursor > 0 {
 			m.versionCursor--
 		}
+		m, cmd := m.triggerPreview()
+		return m, cmd
 	case "j", "ctrl+n":
 		if m.versionCursor < len(m.versionList)-1 {
 			m.versionCursor++
 		}
+		m, cmd := m.triggerPreview()
+		return m, cmd
+	case "ctrl+d":
+		m.previewScroll += m.previewPageSize() / 2
+		m.clampPreviewScroll()
+		return m, nil
+	case "ctrl+u":
+		m.previewScroll -= m.previewPageSize() / 2
+		m.clampPreviewScroll()
+		return m, nil
 	}
 	return m, nil
+}
+
+// previewPageSize returns the number of visible content lines in the preview pane.
+// Matches the right pane's content area (version list visible items).
+func (m model) previewPageSize() int {
+	h := m.versionListHeight()
+	if h < 1 {
+		return 1
+	}
+	return h
+}
+
+// clampPreviewScroll clamps previewScroll to valid range.
+func (m *model) clampPreviewScroll() {
+	if m.previewScroll < 0 {
+		m.previewScroll = 0
+	}
+	lines := strings.Count(m.previewContent, "\n") + 1
+	maxScroll := lines - m.previewPageSize()
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	if m.previewScroll > maxScroll {
+		m.previewScroll = maxScroll
+	}
+}
+
+// triggerPreview checks the current version cursor and initiates preview fetch if needed.
+// Returns the updated model and a command (or nil).
+func (m model) triggerPreview() (model, tea.Cmd) {
+	if len(m.versionList) == 0 || m.versionTarget == nil {
+		return m, nil
+	}
+	v := m.versionList[m.versionCursor]
+	if v.VersionID == m.previewVersion {
+		return m, nil
+	}
+	m.previewVersion = v.VersionID
+	m.previewScroll = 0
+	if v.IsDeleteMarker {
+		m.previewLoading = false
+		m.previewContent = ""
+		m.previewError = "Delete marker"
+		return m, nil
+	}
+	if v.Size > previewMaxBytes {
+		m.previewLoading = false
+		m.previewContent = ""
+		m.previewError = "File too large to preview (>512KB)"
+		return m, nil
+	}
+	m.previewLoading = true
+	m.previewContent = ""
+	m.previewError = ""
+	return m, m.loadVersionPreview(m.versionTarget.entry.key, v.VersionID)
+}
+
+func (m model) loadVersionPreview(key, versionID string) tea.Cmd {
+	client := m.client
+	ctx := m.ctx
+	bucket := m.bucket
+	return func() tea.Msg {
+		var buf bytes.Buffer
+		if err := client.DownloadVersion(ctx, bucket, key, versionID, &buf); err != nil {
+			return versionPreviewMsg{versionID: versionID, err: err}
+		}
+		data := buf.Bytes()
+		if editor.IsBinary(data) {
+			return versionPreviewMsg{versionID: versionID, err: fmt.Errorf("Binary file")}
+		}
+		return versionPreviewMsg{versionID: versionID, content: string(data)}
+	}
 }
 
 func (m model) loadVersions(key string) tea.Cmd {
@@ -1326,46 +1470,7 @@ func (m model) View() string {
 	// Version mode
 	if m.versionMode && len(m.versionList) > 0 {
 		b.WriteString("\n")
-		var verBuf strings.Builder
-		targetName := ""
-		if m.versionTarget != nil {
-			targetName = m.versionTarget.entry.name
-		}
-		verBuf.WriteString(styleMeta.Render("Versions: "+targetName) + "\n")
-		for i, v := range m.versionList {
-			prefix := "  "
-			if i == m.versionCursor {
-				prefix = styleCursor.Render("> ")
-			}
-
-			// Format: versionID (12 chars) + date + size + status
-			vid := v.VersionID
-			if len(vid) > 12 {
-				vid = vid[:12]
-			}
-			var parts []string
-			parts = append(parts, fmt.Sprintf("%-12s", vid))
-			if !v.LastModified.IsZero() {
-				parts = append(parts, v.LastModified.Format("2006-01-02 15:04"))
-			}
-			if !v.IsDeleteMarker {
-				parts = append(parts, formatSize(v.Size))
-			}
-			if v.IsLatest {
-				parts = append(parts, "(current)")
-			}
-			if v.IsDeleteMarker {
-				parts = append(parts, "[delete marker]")
-			}
-			label := strings.Join(parts, "  ")
-
-			if i == m.versionCursor {
-				verBuf.WriteString(prefix + styleMenuSelected.Render(label) + "\n")
-			} else {
-				verBuf.WriteString(prefix + styleMenuItem.Render(label) + "\n")
-			}
-		}
-		b.WriteString(styleMenuBorder.Render(verBuf.String()))
+		b.WriteString(m.renderVersionPane())
 		b.WriteString("\n")
 	}
 
@@ -1395,7 +1500,7 @@ func (m model) View() string {
 	if m.confirmMode {
 		help = "  y confirm  N/esc cancel"
 	} else if m.versionMode {
-		help = "  ↑/↓ navigate  enter restore  esc close"
+		help = "  ↑/↓ navigate  C-d/C-u scroll  enter restore  esc close"
 	} else if m.menuOpen {
 		help = "  ↑/↓ navigate  enter select  esc/← close"
 	} else if m.inputMode {
@@ -1410,4 +1515,178 @@ func (m model) View() string {
 	b.WriteString(styleHelp.Render(help) + "\n")
 
 	return b.String()
+}
+
+// versionListHeight returns the max number of version items visible in the pane.
+// Header art(9) + path(2) + version border(2) + help(3) + message(2 worst case) = ~18 overhead lines.
+func (m model) versionListHeight() int {
+	const overhead = 18
+	if m.termHeight <= overhead {
+		return len(m.versionList) // no constraint if terminal size unknown/tiny
+	}
+	max := m.termHeight - overhead
+	if max < 3 {
+		max = 3
+	}
+	if max > len(m.versionList) {
+		max = len(m.versionList)
+	}
+	return max
+}
+
+// renderVersionPane renders the version list with an optional preview pane.
+func (m model) renderVersionPane() string {
+	targetName := ""
+	if m.versionTarget != nil {
+		targetName = m.versionTarget.entry.name
+	}
+
+	// Determine how many version items fit on screen
+	maxItems := m.versionListHeight()
+	total := len(m.versionList)
+
+	// Scroll the version list to keep cursor visible
+	startIdx := 0
+	if total > maxItems {
+		half := maxItems / 2
+		startIdx = m.versionCursor - half
+		if startIdx < 0 {
+			startIdx = 0
+		}
+		if startIdx+maxItems > total {
+			startIdx = total - maxItems
+		}
+	}
+	endIdx := startIdx + maxItems
+	if endIdx > total {
+		endIdx = total
+	}
+
+	// Build the version list (left pane)
+	var verBuf strings.Builder
+	verBuf.WriteString(styleMeta.Render("Versions: "+targetName) + "\n")
+
+	if startIdx > 0 {
+		verBuf.WriteString(styleHelp.Render(fmt.Sprintf("  (%d more above)", startIdx)) + "\n")
+	}
+
+	for i := startIdx; i < endIdx; i++ {
+		v := m.versionList[i]
+		prefix := "  "
+		if i == m.versionCursor {
+			prefix = styleCursor.Render("> ")
+		}
+
+		vid := v.VersionID
+		if len(vid) > 12 {
+			vid = vid[:12]
+		}
+		var parts []string
+		parts = append(parts, fmt.Sprintf("%-12s", vid))
+		if !v.LastModified.IsZero() {
+			parts = append(parts, v.LastModified.Format("2006-01-02 15:04"))
+		}
+		if !v.IsDeleteMarker {
+			parts = append(parts, formatSize(v.Size))
+		}
+		if v.IsLatest {
+			parts = append(parts, "(current)")
+		}
+		if v.IsDeleteMarker {
+			parts = append(parts, "[delete marker]")
+		}
+		label := strings.Join(parts, "  ")
+
+		if i == m.versionCursor {
+			verBuf.WriteString(prefix + styleMenuSelected.Render(label) + "\n")
+		} else {
+			verBuf.WriteString(prefix + styleMenuItem.Render(label) + "\n")
+		}
+	}
+
+	if endIdx < total {
+		verBuf.WriteString(styleHelp.Render(fmt.Sprintf("  (%d more below)", total-endIdx)) + "\n")
+	}
+
+	leftContent := verBuf.String()
+
+	// If terminal is too narrow, skip preview
+	const minWidthForPreview = 60
+	if m.termWidth > 0 && m.termWidth < minWidthForPreview {
+		return styleMenuBorder.Render(leftContent)
+	}
+
+	// Calculate widths
+	leftWidth := 40  // default minimum
+	rightWidth := 40 // default minimum
+	if m.termWidth > 0 {
+		leftWidth = m.termWidth * 40 / 100
+		if leftWidth < 30 {
+			leftWidth = 30
+		}
+		rightWidth = m.termWidth - leftWidth - 6 // account for borders and gap
+		if rightWidth < 20 {
+			rightWidth = 20
+		}
+	}
+
+	// Count actual left pane lines (header + items + scroll indicators)
+	leftLines := 1 + (endIdx - startIdx) // header + visible items
+	if startIdx > 0 {
+		leftLines++ // "more above"
+	}
+	if endIdx < total {
+		leftLines++ // "more below"
+	}
+
+	// Build preview pane (right pane) with height matching left pane
+	var prevBuf strings.Builder
+	prevBuf.WriteString(styleMeta.Render("Preview") + "\n")
+	contentLines := leftLines - 1 // subtract "Preview" header
+
+	if m.previewLoading {
+		prevBuf.WriteString(styleMeta.Render("Loading...") + "\n")
+		contentLines--
+	} else if m.previewError != "" {
+		prevBuf.WriteString(styleMessage.Render(m.previewError) + "\n")
+		contentLines--
+	} else if m.previewContent != "" {
+		lines := strings.Split(m.previewContent, "\n")
+		start := m.previewScroll
+		if start > len(lines) {
+			start = len(lines)
+		}
+		end := start + contentLines
+		if end > len(lines) {
+			end = len(lines)
+		}
+		for _, line := range lines[start:end] {
+			// Truncate long lines to fit the right pane width
+			if len(line) > rightWidth-2 {
+				line = line[:rightWidth-2]
+			}
+			prevBuf.WriteString(line + "\n")
+		}
+		contentLines -= (end - start)
+		if end < len(lines) && contentLines > 0 {
+			prevBuf.WriteString(styleMeta.Render(fmt.Sprintf("(%d more lines)", len(lines)-end)) + "\n")
+			contentLines--
+		}
+	} else {
+		prevBuf.WriteString(styleMeta.Render("(no content)") + "\n")
+		contentLines--
+	}
+
+	// Pad remaining lines to match left pane height
+	for contentLines > 0 {
+		prevBuf.WriteString("\n")
+		contentLines--
+	}
+
+	rightContent := prevBuf.String()
+
+	leftPane := styleMenuBorder.Width(leftWidth).Render(leftContent)
+	rightPane := stylePreviewBorder.Width(rightWidth).Render(rightContent)
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, leftPane, "  ", rightPane)
 }

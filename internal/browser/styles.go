@@ -10,8 +10,9 @@ var (
 	styleMeta         = lipgloss.NewStyle().Faint(true)
 	styleMessage      = lipgloss.NewStyle().Foreground(lipgloss.Color("3")) // yellow
 	styleFilter       = lipgloss.NewStyle().Bold(true)
-	styleMenuBorder   = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
-	styleMenuSelected = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")) // cyan
-	styleMenuItem     = lipgloss.NewStyle().Faint(true)
-	styleInput        = lipgloss.NewStyle().Bold(true)
+	styleMenuBorder    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
+	styleMenuSelected  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")) // cyan
+	styleMenuItem      = lipgloss.NewStyle().Faint(true)
+	stylePreviewBorder = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
+	styleInput         = lipgloss.NewStyle().Bold(true)
 )
