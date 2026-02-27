@@ -365,7 +365,7 @@ func runDownload(ctx context.Context, client storage.Client, u *uri.URI, dir str
 	if err != nil {
 		return fmt.Errorf("creating file %s: %w", destPath, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	sp := spinner.New(os.Stderr, fmt.Sprintf("Downloading %s ...", u))
 	sp.Start()
@@ -374,7 +374,7 @@ func runDownload(ctx context.Context, client storage.Client, u *uri.URI, dir str
 		return err
 	}
 	sp.StopWithMessage(fmt.Sprintf("✓ Downloaded to %s", destPath))
-	return nil
+	return f.Close()
 }
 
 const bucketCacheTTL = 5 * time.Minute

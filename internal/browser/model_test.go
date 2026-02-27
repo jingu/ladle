@@ -1565,9 +1565,9 @@ func TestTabKeyInDownloadMode(t *testing.T) {
 func TestLocalTabComplete(t *testing.T) {
 	// Create a temp directory with some files
 	tmpDir := t.TempDir()
-	os.WriteFile(filepath.Join(tmpDir, "alpha.txt"), []byte("a"), 0644)
-	os.WriteFile(filepath.Join(tmpDir, "alpha.log"), []byte("b"), 0644)
-	os.Mkdir(filepath.Join(tmpDir, "beta"), 0755)
+	_ = os.WriteFile(filepath.Join(tmpDir, "alpha.txt"), []byte("a"), 0644)
+	_ = os.WriteFile(filepath.Join(tmpDir, "alpha.log"), []byte("b"), 0644)
+	_ = os.Mkdir(filepath.Join(tmpDir, "beta"), 0755)
 
 	cmd := localTabComplete(filepath.Join(tmpDir, "al"))
 	msg := cmd().(localTabCompleteMsg)
@@ -1580,7 +1580,7 @@ func TestLocalTabComplete(t *testing.T) {
 
 func TestLocalTabCompleteSingleMatch(t *testing.T) {
 	tmpDir := t.TempDir()
-	os.WriteFile(filepath.Join(tmpDir, "unique.txt"), []byte("a"), 0644)
+	_ = os.WriteFile(filepath.Join(tmpDir, "unique.txt"), []byte("a"), 0644)
 
 	input := filepath.Join(tmpDir, "uni")
 	cmd := localTabComplete(input)
@@ -1602,7 +1602,7 @@ func TestLocalTabCompleteSingleMatch(t *testing.T) {
 
 func TestLocalTabCompleteDir(t *testing.T) {
 	tmpDir := t.TempDir()
-	os.Mkdir(filepath.Join(tmpDir, "subdir"), 0755)
+	_ = os.Mkdir(filepath.Join(tmpDir, "subdir"), 0755)
 
 	input := filepath.Join(tmpDir, "sub")
 	cmd := localTabComplete(input)
