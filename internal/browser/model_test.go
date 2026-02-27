@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jingu/ladle/internal/storage"
@@ -1663,5 +1664,332 @@ func TestLongestCommonPrefix(t *testing.T) {
 		if got != tt.expected {
 			t.Errorf("longestCommonPrefix(%q, %q) = %q, want %q", tt.a, tt.b, got, tt.expected)
 		}
+	}
+}
+
+// --- Version mode tests ---
+
+func TestVersionMode_MenuSelectVersions(t *testing.T) {
+	mock := storage.NewMockClient()
+	mock.PutObject("test", "file.txt", []byte("hello"), nil)
+
+	now := time.Now()
+	mock.PutObjectVersioned("test", "file.txt", "v2", []byte("hello"), nil, now, false)
+	mock.PutObjectVersioned("test", "file.txt", "v1", []byte("old"), nil, now.Add(-time.Hour), false)
+
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	u, _ := uri.Parse("s3://test/")
+	b := New(mock, u, nil, nil, "test")
+	m := model{
+		nodes:   nodes,
+		client:  mock,
+		ctx:     context.Background(),
+		bucket:  "test",
+		scheme:  "s3",
+		browser: b,
+		editFn:  func(u *uri.URI) error { return nil },
+	}
+	m.menuOpen = true
+	m.menuTarget = nodes[0]
+
+	// Execute Versions action
+	result, cmd := m.executeMenuAction(menuVersions)
+	rm := result.(model)
+	if !rm.loading {
+		t.Error("should be loading after selecting Versions")
+	}
+	if rm.menuOpen {
+		t.Error("menu should be closed")
+	}
+	if cmd == nil {
+		t.Fatal("expected a command to load versions")
+	}
+}
+
+func TestVersionMode_VersionsLoaded(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.loading = true
+
+	now := time.Now()
+	msg := versionsLoadedMsg{
+		versions: []storage.ObjectVersion{
+			{VersionID: "v3", IsLatest: true, Size: 100, LastModified: now},
+			{VersionID: "v2", Size: 90, LastModified: now.Add(-time.Hour)},
+			{VersionID: "v1", Size: 80, LastModified: now.Add(-2 * time.Hour)},
+		},
+	}
+
+	result, _ := m.Update(msg)
+	rm := result.(model)
+	if !rm.versionMode {
+		t.Error("should be in version mode")
+	}
+	if rm.loading {
+		t.Error("should not be loading")
+	}
+	if len(rm.versionList) != 3 {
+		t.Errorf("got %d versions, want 3", len(rm.versionList))
+	}
+	if rm.versionCursor != 0 {
+		t.Errorf("cursor should be 0, got %d", rm.versionCursor)
+	}
+}
+
+func TestVersionMode_CursorMovement(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.versionMode = true
+	m.versionList = []storage.ObjectVersion{
+		{VersionID: "v3", IsLatest: true},
+		{VersionID: "v2"},
+		{VersionID: "v1"},
+	}
+	m.versionCursor = 0
+
+	// Move down
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	rm := result.(model)
+	if rm.versionCursor != 1 {
+		t.Errorf("cursor after down: got %d, want 1", rm.versionCursor)
+	}
+
+	// Move down again
+	result, _ = rm.Update(tea.KeyMsg{Type: tea.KeyDown})
+	rm = result.(model)
+	if rm.versionCursor != 2 {
+		t.Errorf("cursor after second down: got %d, want 2", rm.versionCursor)
+	}
+
+	// Move down at bottom
+	result, _ = rm.Update(tea.KeyMsg{Type: tea.KeyDown})
+	rm = result.(model)
+	if rm.versionCursor != 2 {
+		t.Errorf("cursor should stay at 2, got %d", rm.versionCursor)
+	}
+
+	// Move up
+	result, _ = rm.Update(tea.KeyMsg{Type: tea.KeyUp})
+	rm = result.(model)
+	if rm.versionCursor != 1 {
+		t.Errorf("cursor after up: got %d, want 1", rm.versionCursor)
+	}
+
+	// j/k keys
+	result, _ = rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	rm = result.(model)
+	if rm.versionCursor != 2 {
+		t.Errorf("cursor after j: got %d, want 2", rm.versionCursor)
+	}
+
+	result, _ = rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	rm = result.(model)
+	if rm.versionCursor != 1 {
+		t.Errorf("cursor after k: got %d, want 1", rm.versionCursor)
+	}
+}
+
+func TestVersionMode_EscClose(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.versionMode = true
+	m.versionList = []storage.ObjectVersion{
+		{VersionID: "v2", IsLatest: true},
+		{VersionID: "v1"},
+	}
+	m.versionTarget = nodes[0]
+
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	rm := result.(model)
+	if rm.versionMode {
+		t.Error("version mode should be closed")
+	}
+	if rm.versionList != nil {
+		t.Error("version list should be nil")
+	}
+	if rm.versionTarget != nil {
+		t.Error("version target should be nil")
+	}
+}
+
+func TestVersionMode_EnterOnLatest(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.versionMode = true
+	m.versionCursor = 0
+	m.versionList = []storage.ObjectVersion{
+		{VersionID: "v2", IsLatest: true},
+		{VersionID: "v1"},
+	}
+	m.versionTarget = nodes[0]
+
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	rm := result.(model)
+	if rm.versionMode {
+		t.Error("version mode should be closed")
+	}
+	if rm.message != "Already the current version" {
+		t.Errorf("message: got %q, want %q", rm.message, "Already the current version")
+	}
+}
+
+func TestVersionMode_EnterOnDeleteMarker(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.versionMode = true
+	m.versionCursor = 1
+	m.versionList = []storage.ObjectVersion{
+		{VersionID: "v2", IsLatest: true},
+		{VersionID: "dm1", IsDeleteMarker: true},
+	}
+	m.versionTarget = nodes[0]
+
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	rm := result.(model)
+	if rm.versionMode {
+		t.Error("version mode should be closed")
+	}
+	if rm.message != "Cannot restore a delete marker" {
+		t.Errorf("message: got %q, want %q", rm.message, "Cannot restore a delete marker")
+	}
+}
+
+func TestVersionMode_EnterOnValidVersion(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.versionMode = true
+	m.versionCursor = 1
+	m.versionList = []storage.ObjectVersion{
+		{VersionID: "v2", IsLatest: true},
+		{VersionID: "v1"},
+	}
+	m.versionTarget = nodes[0]
+	m.restoreVersionFn = func(u *uri.URI, versionID string) error {
+		return nil
+	}
+
+	result, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	rm := result.(model)
+	if rm.versionMode {
+		t.Error("version mode should be closed")
+	}
+	if cmd == nil {
+		t.Error("expected a tea.Exec command for restore")
+	}
+}
+
+func TestVersionMode_NoVersionHistory(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.loading = true
+
+	msg := versionsLoadedMsg{
+		versions: []storage.ObjectVersion{
+			{VersionID: "null", IsLatest: true},
+		},
+	}
+
+	result, _ := m.Update(msg)
+	rm := result.(model)
+	if rm.versionMode {
+		t.Error("should not enter version mode with single version")
+	}
+	if rm.message != "No version history" {
+		t.Errorf("message: got %q, want %q", rm.message, "No version history")
+	}
+}
+
+func TestVersionMode_ViewRendering(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.versionMode = true
+	m.versionCursor = 0
+	now := time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC)
+	m.versionList = []storage.ObjectVersion{
+		{VersionID: "abcdef123456789", IsLatest: true, Size: 1024, LastModified: now},
+		{VersionID: "xyz987654321abc", Size: 512, LastModified: now.Add(-time.Hour)},
+	}
+	m.versionTarget = nodes[0]
+
+	view := m.View()
+
+	if !strings.Contains(view, "Versions:") {
+		t.Error("view should contain 'Versions:'")
+	}
+	if !strings.Contains(view, "abcdef123456") {
+		t.Error("view should contain truncated version ID")
+	}
+	if !strings.Contains(view, "(current)") {
+		t.Error("view should contain '(current)' for latest version")
+	}
+	if !strings.Contains(view, "restore") {
+		t.Error("help should contain 'restore'")
+	}
+}
+
+func TestVersionMode_RestoreNotAvailable(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.versionMode = true
+	m.versionCursor = 1
+	m.versionList = []storage.ObjectVersion{
+		{VersionID: "v2", IsLatest: true},
+		{VersionID: "v1"},
+	}
+	m.versionTarget = nodes[0]
+	m.restoreVersionFn = nil
+
+	result, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	rm := result.(model)
+	if rm.versionMode {
+		t.Error("version mode should be closed")
+	}
+	if rm.message == "" {
+		t.Error("should have an error message when restoreVersionFn is nil")
+	}
+	if cmd != nil {
+		t.Error("should not return a command when restore is not available")
+	}
+}
+
+func TestVersionMode_VersionsLoadedError(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "file.txt", key: "file.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.loading = true
+
+	msg := versionsLoadedMsg{err: fmt.Errorf("access denied")}
+
+	result, _ := m.Update(msg)
+	rm := result.(model)
+	if rm.versionMode {
+		t.Error("should not be in version mode on error")
+	}
+	if rm.loading {
+		t.Error("should not be loading")
+	}
+	if rm.message == "" {
+		t.Error("should have error message")
 	}
 }

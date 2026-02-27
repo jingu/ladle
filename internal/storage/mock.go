@@ -15,6 +15,15 @@ type MockClient struct {
 	mu       sync.Mutex
 	objects  map[string]mockObject
 	buckets  []string
+	versions map[string][]mockVersion
+}
+
+type mockVersion struct {
+	versionID      string
+	data           []byte
+	meta           ObjectMetadata
+	lastModified   time.Time
+	isDeleteMarker bool
 }
 
 type mockObject struct {
@@ -43,6 +52,26 @@ func (m *MockClient) PutObject(bucket, key string, data []byte, meta *ObjectMeta
 		obj.meta = *meta
 	}
 	m.objects[m.key(bucket, key)] = obj
+}
+
+// PutObjectVersioned adds a versioned entry to the mock store.
+func (m *MockClient) PutObjectVersioned(bucket, key, versionID string, data []byte, meta *ObjectMetadata, lastModified time.Time, isDeleteMarker bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.versions == nil {
+		m.versions = make(map[string][]mockVersion)
+	}
+	k := m.key(bucket, key)
+	mv := mockVersion{
+		versionID:      versionID,
+		data:           data,
+		lastModified:   lastModified,
+		isDeleteMarker: isDeleteMarker,
+	}
+	if meta != nil {
+		mv.meta = *meta
+	}
+	m.versions[k] = append(m.versions[k], mv)
 }
 
 // SetBuckets sets the list of buckets.
@@ -175,4 +204,58 @@ func (m *MockClient) Copy(_ context.Context, bucket, srcKey, dstKey string) erro
 	copy(copied.data, obj.data)
 	m.objects[dst] = copied
 	return nil
+}
+
+func (m *MockClient) ListVersions(_ context.Context, bucket, key string) ([]ObjectVersion, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := m.key(bucket, key)
+
+	if vers, ok := m.versions[k]; ok && len(vers) > 0 {
+		result := make([]ObjectVersion, len(vers))
+		for i, v := range vers {
+			result[i] = ObjectVersion{
+				VersionID:      v.versionID,
+				IsLatest:       i == 0,
+				IsDeleteMarker: v.isDeleteMarker,
+				Size:           int64(len(v.data)),
+				LastModified:   v.lastModified,
+			}
+		}
+		return result, nil
+	}
+
+	// No version history — return current object as "null" version
+	obj, ok := m.objects[k]
+	if !ok {
+		return nil, fmt.Errorf("object not found: %s/%s", bucket, key)
+	}
+	return []ObjectVersion{
+		{
+			VersionID:    "null",
+			IsLatest:     true,
+			Size:         int64(len(obj.data)),
+			LastModified: obj.lastModified,
+		},
+	}, nil
+}
+
+func (m *MockClient) DownloadVersion(_ context.Context, bucket, key, versionID string, w io.Writer) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k := m.key(bucket, key)
+	vers, ok := m.versions[k]
+	if !ok {
+		return fmt.Errorf("no versions found for %s/%s", bucket, key)
+	}
+	for _, v := range vers {
+		if v.versionID == versionID {
+			if v.isDeleteMarker {
+				return fmt.Errorf("version %s is a delete marker", versionID)
+			}
+			_, err := io.Copy(w, bytes.NewReader(v.data))
+			return err
+		}
+	}
+	return fmt.Errorf("version %s not found for %s/%s", versionID, bucket, key)
 }

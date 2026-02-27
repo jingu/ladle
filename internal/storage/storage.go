@@ -24,6 +24,15 @@ type ListEntry struct {
 	LastModified time.Time
 }
 
+// ObjectVersion represents a single version of an object.
+type ObjectVersion struct {
+	VersionID      string
+	IsLatest       bool
+	IsDeleteMarker bool
+	Size           int64
+	LastModified   time.Time
+}
+
 // Client defines the operations required for a cloud storage backend.
 type Client interface {
 	// Download retrieves an object and writes it to the given writer.
@@ -50,4 +59,10 @@ type Client interface {
 
 	// Copy copies an object within the same bucket.
 	Copy(ctx context.Context, bucket, srcKey, dstKey string) error
+
+	// ListVersions lists all versions of an object.
+	ListVersions(ctx context.Context, bucket, key string) ([]ObjectVersion, error)
+
+	// DownloadVersion retrieves a specific version of an object and writes it to the given writer.
+	DownloadVersion(ctx context.Context, bucket, key, versionID string, w io.Writer) error
 }

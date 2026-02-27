@@ -56,6 +56,7 @@ const (
 	menuCopy
 	menuMove
 	menuDelete
+	menuVersions
 )
 
 var menuItems = []struct {
@@ -68,6 +69,7 @@ var menuItems = []struct {
 	{menuCopy, "Copy to..."},
 	{menuMove, "Move to..."},
 	{menuDelete, "Delete"},
+	{menuVersions, "Versions"},
 }
 
 // tabCompleteMsg carries completion candidates back to the input handler.
@@ -85,6 +87,12 @@ type localTabCompleteMsg struct {
 type actionDoneMsg struct {
 	message string
 	err     error
+}
+
+// versionsLoadedMsg carries the version list back to Update.
+type versionsLoadedMsg struct {
+	versions []storage.ObjectVersion
+	err      error
 }
 
 // navigatedMsg is sent after navigation (goUp / bucket select) rebuilds the view.
@@ -149,19 +157,26 @@ type model struct {
 	confirmPrompt     string
 	pendingDeleteKey  string
 
+	// Version mode state
+	versionMode   bool
+	versionCursor int
+	versionList   []storage.ObjectVersion
+	versionTarget *node
+
 	quitting     bool
 	loading      bool
 	spinnerFrame int
 
-	client     storage.Client
-	ctx        context.Context // stored because bubbletea Cmd closures need it
-	bucket     string
-	prefix     string
-	scheme     string
-	browser    *Browser
-	editFn     EditFunc
-	editMetaFn EditMetaFunc
-	downloadFn DownloadFunc
+	client           storage.Client
+	ctx              context.Context // stored because bubbletea Cmd closures need it
+	bucket           string
+	prefix           string
+	scheme           string
+	browser          *Browser
+	editFn           EditFunc
+	editMetaFn       EditMetaFunc
+	downloadFn       DownloadFunc
+	restoreVersionFn RestoreVersionFunc
 }
 
 func (m model) Init() tea.Cmd {
@@ -210,6 +225,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.message = msg.message
 		}
 		return m, nil
+	case versionsLoadedMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.message = apierror.Classify(msg.err).Error()
+			return m, nil
+		}
+		if len(msg.versions) <= 1 {
+			m.message = "No version history"
+			return m, nil
+		}
+		m.versionMode = true
+		m.versionCursor = 0
+		m.versionList = msg.versions
+		return m, nil
 	case navigatedMsg:
 		m.loading = false
 		if msg.err != nil {
@@ -230,6 +259,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Version mode handling
+	if m.versionMode {
+		return m.handleVersionKey(msg)
+	}
+
 	// Confirm dialog handling (delete confirmation)
 	if m.confirmMode {
 		return m.handleConfirmKey(msg)
@@ -579,6 +613,12 @@ func (m model) executeMenuAction(action menuAction) (tea.Model, tea.Cmd) {
 		m.inputText = target.entry.key
 		m.inputAction = menuMove
 		return m, nil
+
+	case menuVersions:
+		m.menuTarget = nil
+		m.versionTarget = target
+		m.loading = true
+		return m, tea.Batch(m.startLoading(), m.loadVersions(target.entry.key))
 	}
 	return m, nil
 }
@@ -865,6 +905,113 @@ func (c *downloadCommand) Run() error           { return c.downloadFn(c.uri, c.d
 func (c *downloadCommand) SetStdin(r io.Reader)  { c.stdin = r }
 func (c *downloadCommand) SetStdout(w io.Writer) { c.stdout = w }
 func (c *downloadCommand) SetStderr(w io.Writer) { c.stderr = w }
+
+func (m model) handleVersionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEscape:
+		m.versionMode = false
+		m.versionList = nil
+		m.versionTarget = nil
+		return m, nil
+	case tea.KeyUp:
+		if m.versionCursor > 0 {
+			m.versionCursor--
+		}
+		return m, nil
+	case tea.KeyDown:
+		if m.versionCursor < len(m.versionList)-1 {
+			m.versionCursor++
+		}
+		return m, nil
+	case tea.KeyEnter:
+		if len(m.versionList) == 0 {
+			return m, nil
+		}
+		v := m.versionList[m.versionCursor]
+		if v.IsLatest {
+			m.message = "Already the current version"
+			m.versionMode = false
+			m.versionList = nil
+			m.versionTarget = nil
+			return m, nil
+		}
+		if v.IsDeleteMarker {
+			m.message = "Cannot restore a delete marker"
+			m.versionMode = false
+			m.versionList = nil
+			m.versionTarget = nil
+			return m, nil
+		}
+		key := m.versionTarget.entry.key
+		versionID := v.VersionID
+		m.versionMode = false
+		m.versionList = nil
+		m.versionTarget = nil
+		cmd, err := m.execRestoreVersion(key, versionID)
+		if err != nil {
+			m.message = apierror.Classify(err).Error()
+			return m, nil
+		}
+		return m, cmd
+	case tea.KeyCtrlC:
+		m.quitting = true
+		return m, tea.Quit
+	}
+
+	switch msg.String() {
+	case "k", "ctrl+p":
+		if m.versionCursor > 0 {
+			m.versionCursor--
+		}
+	case "j", "ctrl+n":
+		if m.versionCursor < len(m.versionList)-1 {
+			m.versionCursor++
+		}
+	}
+	return m, nil
+}
+
+func (m model) loadVersions(key string) tea.Cmd {
+	client := m.client
+	ctx := m.ctx
+	bucket := m.bucket
+	return func() tea.Msg {
+		versions, err := client.ListVersions(ctx, bucket, key)
+		return versionsLoadedMsg{versions: versions, err: err}
+	}
+}
+
+// restoreVersionCommand implements tea.ExecCommand to run the restore workflow
+// while the TUI is suspended.
+type restoreVersionCommand struct {
+	restoreVersionFn RestoreVersionFunc
+	uri              *uri.URI
+	versionID        string
+	stdin            io.Reader
+	stdout           io.Writer
+	stderr           io.Writer
+}
+
+func (c *restoreVersionCommand) Run() error           { return c.restoreVersionFn(c.uri, c.versionID) }
+func (c *restoreVersionCommand) SetStdin(r io.Reader)  { c.stdin = r }
+func (c *restoreVersionCommand) SetStdout(w io.Writer) { c.stdout = w }
+func (c *restoreVersionCommand) SetStderr(w io.Writer) { c.stderr = w }
+
+// execRestoreVersion returns a tea.Exec command that suspends the TUI and runs the restore.
+func (m model) execRestoreVersion(key, versionID string) (tea.Cmd, error) {
+	if m.restoreVersionFn == nil {
+		return nil, fmt.Errorf("version restore not available")
+	}
+	raw := fmt.Sprintf("%s://%s/%s", m.scheme, m.bucket, key)
+	u, err := uri.Parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	cmd := &restoreVersionCommand{restoreVersionFn: m.restoreVersionFn, uri: u, versionID: versionID}
+	return tea.Exec(cmd, func(err error) tea.Msg {
+		return editDoneMsg{err: err}
+	}), nil
+}
 
 // execEdit returns a tea.Exec command that suspends the TUI and runs the edit.
 func (m model) execEdit(key string) (tea.Cmd, error) {
@@ -1176,6 +1323,52 @@ func (m model) View() string {
 		b.WriteString("\n")
 	}
 
+	// Version mode
+	if m.versionMode && len(m.versionList) > 0 {
+		b.WriteString("\n")
+		var verBuf strings.Builder
+		targetName := ""
+		if m.versionTarget != nil {
+			targetName = m.versionTarget.entry.name
+		}
+		verBuf.WriteString(styleMeta.Render("Versions: "+targetName) + "\n")
+		for i, v := range m.versionList {
+			prefix := "  "
+			if i == m.versionCursor {
+				prefix = styleCursor.Render("> ")
+			}
+
+			// Format: versionID (12 chars) + date + size + status
+			vid := v.VersionID
+			if len(vid) > 12 {
+				vid = vid[:12]
+			}
+			var parts []string
+			parts = append(parts, fmt.Sprintf("%-12s", vid))
+			if !v.LastModified.IsZero() {
+				parts = append(parts, v.LastModified.Format("2006-01-02 15:04"))
+			}
+			if !v.IsDeleteMarker {
+				parts = append(parts, formatSize(v.Size))
+			}
+			if v.IsLatest {
+				parts = append(parts, "(current)")
+			}
+			if v.IsDeleteMarker {
+				parts = append(parts, "[delete marker]")
+			}
+			label := strings.Join(parts, "  ")
+
+			if i == m.versionCursor {
+				verBuf.WriteString(prefix + styleMenuSelected.Render(label) + "\n")
+			} else {
+				verBuf.WriteString(prefix + styleMenuItem.Render(label) + "\n")
+			}
+		}
+		b.WriteString(styleMenuBorder.Render(verBuf.String()))
+		b.WriteString("\n")
+	}
+
 	// Confirm dialog
 	if m.confirmMode {
 		b.WriteString("\n  " + styleInput.Render(m.confirmPrompt) + "\n")
@@ -1201,6 +1394,8 @@ func (m model) View() string {
 	var help string
 	if m.confirmMode {
 		help = "  y confirm  N/esc cancel"
+	} else if m.versionMode {
+		help = "  ↑/↓ navigate  enter restore  esc close"
 	} else if m.menuOpen {
 		help = "  ↑/↓ navigate  enter select  esc/← close"
 	} else if m.inputMode {

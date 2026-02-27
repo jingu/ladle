@@ -5,6 +5,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMockClient_DownloadUpload(t *testing.T) {
@@ -121,5 +122,85 @@ func TestMockClient_ListBuckets(t *testing.T) {
 	}
 	if len(buckets) != 2 {
 		t.Errorf("got %d buckets, want 2", len(buckets))
+	}
+}
+
+func TestMockClient_ListVersions(t *testing.T) {
+	ctx := context.Background()
+	m := NewMockClient()
+
+	now := time.Now()
+	m.PutObjectVersioned("bucket", "file.txt", "v2", []byte("version2"), nil, now, false)
+	m.PutObjectVersioned("bucket", "file.txt", "v1", []byte("version1"), nil, now.Add(-time.Hour), false)
+
+	versions, err := m.ListVersions(ctx, "bucket", "file.txt")
+	if err != nil {
+		t.Fatalf("list versions: %v", err)
+	}
+	if len(versions) != 2 {
+		t.Fatalf("got %d versions, want 2", len(versions))
+	}
+	if !versions[0].IsLatest {
+		t.Error("first version should be latest")
+	}
+	if versions[0].VersionID != "v2" {
+		t.Errorf("first version ID: got %q, want %q", versions[0].VersionID, "v2")
+	}
+	if versions[1].IsLatest {
+		t.Error("second version should not be latest")
+	}
+}
+
+func TestMockClient_ListVersions_NoVersioning(t *testing.T) {
+	ctx := context.Background()
+	m := NewMockClient()
+	m.PutObject("bucket", "file.txt", []byte("hello"), nil)
+
+	versions, err := m.ListVersions(ctx, "bucket", "file.txt")
+	if err != nil {
+		t.Fatalf("list versions: %v", err)
+	}
+	if len(versions) != 1 {
+		t.Fatalf("got %d versions, want 1", len(versions))
+	}
+	if versions[0].VersionID != "null" {
+		t.Errorf("version ID: got %q, want %q", versions[0].VersionID, "null")
+	}
+	if !versions[0].IsLatest {
+		t.Error("should be latest")
+	}
+}
+
+func TestMockClient_DownloadVersion(t *testing.T) {
+	ctx := context.Background()
+	m := NewMockClient()
+
+	now := time.Now()
+	m.PutObjectVersioned("bucket", "file.txt", "v2", []byte("new content"), nil, now, false)
+	m.PutObjectVersioned("bucket", "file.txt", "v1", []byte("old content"), nil, now.Add(-time.Hour), false)
+
+	var buf bytes.Buffer
+	if err := m.DownloadVersion(ctx, "bucket", "file.txt", "v1", &buf); err != nil {
+		t.Fatalf("download version: %v", err)
+	}
+	if buf.String() != "old content" {
+		t.Errorf("got %q, want %q", buf.String(), "old content")
+	}
+}
+
+func TestMockClient_DownloadVersion_DeleteMarker(t *testing.T) {
+	ctx := context.Background()
+	m := NewMockClient()
+
+	now := time.Now()
+	m.PutObjectVersioned("bucket", "file.txt", "dm1", nil, nil, now, true)
+
+	var buf bytes.Buffer
+	err := m.DownloadVersion(ctx, "bucket", "file.txt", "dm1", &buf)
+	if err == nil {
+		t.Fatal("expected error for delete marker, got nil")
+	}
+	if !strings.Contains(err.Error(), "delete marker") {
+		t.Errorf("error should mention delete marker, got: %v", err)
 	}
 }

@@ -253,6 +253,74 @@ func (c *S3Client) Copy(ctx context.Context, bucket, srcKey, dstKey string) erro
 	return nil
 }
 
+func (c *S3Client) ListVersions(ctx context.Context, bucket, key string) ([]storage.ObjectVersion, error) {
+	input := &s3.ListObjectVersionsInput{
+		Bucket: aws.String(bucket),
+		Prefix: aws.String(key),
+	}
+
+	var versions []storage.ObjectVersion
+	paginator := s3.NewListObjectVersionsPaginator(c.client, input)
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("listing versions for s3://%s/%s: %w", bucket, key, err)
+		}
+		for _, v := range page.Versions {
+			if v.Key == nil || *v.Key != key {
+				continue
+			}
+			ov := storage.ObjectVersion{
+				IsLatest: v.IsLatest != nil && *v.IsLatest,
+			}
+			if v.VersionId != nil {
+				ov.VersionID = *v.VersionId
+			}
+			if v.Size != nil {
+				ov.Size = *v.Size
+			}
+			if v.LastModified != nil {
+				ov.LastModified = *v.LastModified
+			}
+			versions = append(versions, ov)
+		}
+		for _, dm := range page.DeleteMarkers {
+			if dm.Key == nil || *dm.Key != key {
+				continue
+			}
+			ov := storage.ObjectVersion{
+				IsDeleteMarker: true,
+				IsLatest:       dm.IsLatest != nil && *dm.IsLatest,
+			}
+			if dm.VersionId != nil {
+				ov.VersionID = *dm.VersionId
+			}
+			if dm.LastModified != nil {
+				ov.LastModified = *dm.LastModified
+			}
+			versions = append(versions, ov)
+		}
+	}
+	return versions, nil
+}
+
+func (c *S3Client) DownloadVersion(ctx context.Context, bucket, key, versionID string, w io.Writer) error {
+	out, err := c.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket:    aws.String(bucket),
+		Key:       aws.String(key),
+		VersionId: aws.String(versionID),
+	})
+	if err != nil {
+		return fmt.Errorf("downloading s3://%s/%s (version %s): %w", bucket, key, versionID, err)
+	}
+	defer func() { _ = out.Body.Close() }()
+
+	if _, err := io.Copy(w, out.Body); err != nil {
+		return fmt.Errorf("reading s3://%s/%s (version %s): %w", bucket, key, versionID, err)
+	}
+	return nil
+}
+
 // encodeKeySegments URL-encodes each path segment of an S3 key per RFC 3986.
 func encodeKeySegments(key string) string {
 	segments := strings.Split(key, "/")

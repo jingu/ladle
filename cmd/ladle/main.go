@@ -384,10 +384,80 @@ func runBrowser(ctx context.Context, client storage.Client, u *uri.URI, f *flags
 	downloadFn := func(selected *uri.URI, dir string) error {
 		return runDownload(ctx, client, selected, dir)
 	}
+	restoreVersionFn := func(selected *uri.URI, versionID string) error {
+		return runRestoreVersion(ctx, client, selected, versionID)
+	}
 	return b.Run(ctx, editFn,
 		browser.WithEditMeta(editMetaFn),
 		browser.WithDownload(downloadFn),
+		browser.WithRestoreVersion(restoreVersionFn),
 	)
+}
+
+func runRestoreVersion(ctx context.Context, client storage.Client, u *uri.URI, versionID string) error {
+	// Download current version
+	var currentBuf strings.Builder
+	sp := spinner.New(os.Stderr, fmt.Sprintf("Downloading current %s ...", u))
+	sp.Start()
+	if err := client.Download(ctx, u.Bucket, u.Key, &currentBuf); err != nil {
+		sp.Stop()
+		return err
+	}
+	sp.StopWithMessage(fmt.Sprintf("✓ Downloaded current %s", u))
+	current := currentBuf.String()
+
+	// Download selected version
+	var selectedBuf strings.Builder
+	sp = spinner.New(os.Stderr, fmt.Sprintf("Downloading version %s ...", versionID))
+	sp.Start()
+	if err := client.DownloadVersion(ctx, u.Bucket, u.Key, versionID, &selectedBuf); err != nil {
+		sp.Stop()
+		return err
+	}
+	sp.StopWithMessage(fmt.Sprintf("✓ Downloaded version %s", versionID))
+	selected := selectedBuf.String()
+
+	// Binary check
+	isBinary := editor.IsBinary([]byte(selected))
+	if isBinary {
+		fmt.Fprintf(os.Stderr, "Warning: %s appears to be a binary file. Diff is not shown.\n", u)
+	}
+
+	if !isBinary {
+		// Check for differences
+		diffText := diff.Generate(current, selected, "current", "version "+versionID)
+		if diffText == "" {
+			fmt.Fprintln(os.Stderr, "No differences between current and selected version.")
+			return nil
+		}
+
+		// Show diff
+		fmt.Fprintf(os.Stderr, "\nFile: %s\n\n", u)
+		diff.Print(os.Stderr, diffText)
+	}
+
+	// Confirm
+	if !confirm(os.Stdin, os.Stderr, "Restore this version?") {
+		fmt.Fprintln(os.Stderr, "Restore cancelled.")
+		return nil
+	}
+
+	// Get existing metadata to preserve it
+	existingMeta, err := client.HeadObject(ctx, u.Bucket, u.Key)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not fetch metadata: %v\n", err)
+		existingMeta = &storage.ObjectMetadata{}
+	}
+
+	// Upload restored content
+	sp = spinner.New(os.Stderr, fmt.Sprintf("Restoring %s ...", u))
+	sp.Start()
+	if err := client.Upload(ctx, u.Bucket, u.Key, strings.NewReader(selected), existingMeta); err != nil {
+		sp.Stop()
+		return err
+	}
+	sp.StopWithMessage(fmt.Sprintf("✓ Restored %s to version %s", u, versionID))
+	return nil
 }
 
 func runDownload(ctx context.Context, client storage.Client, u *uri.URI, dir string) error {
