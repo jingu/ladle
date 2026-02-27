@@ -488,7 +488,7 @@ func runPipeIn(ctx context.Context, client storage.Client, u *uri.URI, f *flags)
 		if err != nil {
 			return fmt.Errorf("cannot open terminal for confirmation (use --yes to skip): %w", err)
 		}
-		defer tty.Close()
+		defer func() { _ = tty.Close() }()
 		if !confirm(tty, os.Stderr, "Upload changes?") {
 			fmt.Fprintln(os.Stderr, "Upload cancelled.")
 			return nil
@@ -585,7 +585,7 @@ func runMetaPipeIn(ctx context.Context, client storage.Client, u *uri.URI, f *fl
 		if err != nil {
 			return fmt.Errorf("cannot open terminal for confirmation (use --yes to skip): %w", err)
 		}
-		defer tty.Close()
+		defer func() { _ = tty.Close() }()
 		if !confirm(tty, os.Stderr, "Update metadata?") {
 			fmt.Fprintln(os.Stderr, "Update cancelled.")
 			return nil

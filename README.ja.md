@@ -86,6 +86,33 @@ Done.
 
 メタデータの更新にはS3 CopyObject APIを使用 — ファイル本体の再アップロードは不要。
 
+### パイプ & リダイレクト
+
+ladle はシェルリダイレクトを検出し、パイプラインやスクリプトで使用できます — エディタ不要。
+
+```bash
+# ローカルファイルにダウンロード
+ladle s3://myapp/config.json > config.json
+
+# ローカルファイルからアップロード（差分表示・確認あり）
+ladle s3://myapp/config.json < config.json
+
+# 確認をスキップ
+ladle --yes s3://myapp/config.json < config.json
+
+# アップロードせずに差分のみ表示
+ladle --dry-run s3://myapp/config.json < config.json
+
+# メタデータをYAMLでエクスポート / インポート
+ladle --meta s3://myapp/index.html > meta.yaml
+ladle --meta s3://myapp/index.html < meta.yaml
+
+# 変換して再アップロード
+ladle s3://myapp/config.json | jq '.debug = true' | ladle --yes s3://myapp/config.json
+```
+
+stdin がリダイレクトされている場合、確認プロンプトは `/dev/tty` から読み取ります。非インタラクティブ環境では `--yes` を使用してください。オブジェクトが存在しない場合は新規作成されます。
+
 ### ファイルをブラウズ
 
 ```

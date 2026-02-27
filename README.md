@@ -86,6 +86,33 @@ Done.
 
 Metadata updates use the S3 CopyObject API — no re-upload of file content.
 
+### Pipe & Redirect
+
+ladle detects shell redirection so you can use it in pipelines and scripts — no interactive editor needed.
+
+```bash
+# Download to local file
+ladle s3://myapp/config.json > config.json
+
+# Upload from local file (shows diff, asks confirmation)
+ladle s3://myapp/config.json < config.json
+
+# Skip confirmation
+ladle --yes s3://myapp/config.json < config.json
+
+# Preview changes without uploading
+ladle --dry-run s3://myapp/config.json < config.json
+
+# Export / import metadata as YAML
+ladle --meta s3://myapp/index.html > meta.yaml
+ladle --meta s3://myapp/index.html < meta.yaml
+
+# Transform and re-upload
+ladle s3://myapp/config.json | jq '.debug = true' | ladle --yes s3://myapp/config.json
+```
+
+When stdin is redirected, confirmation reads from `/dev/tty`. Use `--yes` to skip in non-interactive environments. If the object doesn't exist yet, stdin upload creates it as a new object.
+
 ### Browse files
 
 ```
