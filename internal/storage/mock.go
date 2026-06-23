@@ -8,7 +8,20 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/aws/smithy-go"
 )
+
+// notFoundErr returns an error that apierror.Classify recognizes as
+// KindNotFound, mirroring how real S3 reports a missing object. This lets
+// callers (e.g. pipe-in "create new object" handling) distinguish a missing
+// object from other failures.
+func notFoundErr(bucket, key string) error {
+	return &smithy.GenericAPIError{
+		Code:    "NoSuchKey",
+		Message: fmt.Sprintf("object not found: %s/%s", bucket, key),
+	}
+}
 
 // MockClient is an in-memory implementation of Client for testing.
 type MockClient struct {
@@ -86,7 +99,7 @@ func (m *MockClient) Download(_ context.Context, bucket, key string, w io.Writer
 	defer m.mu.Unlock()
 	obj, ok := m.objects[m.key(bucket, key)]
 	if !ok {
-		return fmt.Errorf("object not found: %s/%s", bucket, key)
+		return notFoundErr(bucket, key)
 	}
 	_, err := io.Copy(w, bytes.NewReader(obj.data))
 	return err

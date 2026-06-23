@@ -200,15 +200,17 @@ func run(cmd *cobra.Command, args []string, f *flags) error {
 	}
 	if stdoutPiped {
 		if f.meta {
-			return runMetaPipeOut(ctx, client, u)
+			return runMetaPipeOut(ctx, client, u, os.Stdout)
 		}
-		return runPipeOut(ctx, client, u)
+		return runPipeOut(ctx, client, u, os.Stdout)
 	}
 	if stdinPiped {
+		// stdin carries the payload, so confirmation reads from /dev/tty (opened lazily).
+		openConfirm := func() (io.ReadCloser, error) { return os.Open("/dev/tty") }
 		if f.meta {
-			return runMetaPipeIn(ctx, client, u, f)
+			return runMetaPipeIn(ctx, client, u, f, os.Stdin, openConfirm)
 		}
-		return runPipeIn(ctx, client, u, f)
+		return runPipeIn(ctx, client, u, f, os.Stdin, openConfirm)
 	}
 
 	// File editing (interactive)
@@ -551,10 +553,10 @@ func isTerminal(f *os.File) bool {
 	return (fi.Mode() & os.ModeCharDevice) != 0
 }
 
-func runPipeOut(ctx context.Context, client storage.Client, u *uri.URI) error {
+func runPipeOut(ctx context.Context, client storage.Client, u *uri.URI, out io.Writer) error {
 	sp := spinner.New(os.Stderr, fmt.Sprintf("Downloading %s ...", u))
 	sp.Start()
-	if err := client.Download(ctx, u.Bucket, u.Key, os.Stdout); err != nil {
+	if err := client.Download(ctx, u.Bucket, u.Key, out); err != nil {
 		sp.Stop()
 		return err
 	}
@@ -562,9 +564,9 @@ func runPipeOut(ctx context.Context, client storage.Client, u *uri.URI) error {
 	return nil
 }
 
-func runPipeIn(ctx context.Context, client storage.Client, u *uri.URI, f *flags) error {
-	// Read all stdin
-	newContent, err := io.ReadAll(os.Stdin)
+func runPipeIn(ctx context.Context, client storage.Client, u *uri.URI, f *flags, in io.Reader, openConfirm func() (io.ReadCloser, error)) error {
+	// Read all input
+	newContent, err := io.ReadAll(in)
 	if err != nil {
 		return fmt.Errorf("reading stdin: %w", err)
 	}
@@ -611,7 +613,7 @@ func runPipeIn(ctx context.Context, client storage.Client, u *uri.URI, f *flags)
 
 	// Confirm (stdin is used for file content, so read from /dev/tty)
 	if !f.yes {
-		tty, err := os.Open("/dev/tty")
+		tty, err := openConfirm()
 		if err != nil {
 			return fmt.Errorf("cannot open terminal for confirmation (use --yes to skip): %w", err)
 		}
@@ -643,7 +645,7 @@ func runPipeIn(ctx context.Context, client storage.Client, u *uri.URI, f *flags)
 	return nil
 }
 
-func runMetaPipeOut(ctx context.Context, client storage.Client, u *uri.URI) error {
+func runMetaPipeOut(ctx context.Context, client storage.Client, u *uri.URI, out io.Writer) error {
 	sp := spinner.New(os.Stderr, fmt.Sprintf("Fetching metadata for %s ...", u))
 	sp.Start()
 	objMeta, err := client.HeadObject(ctx, u.Bucket, u.Key)
@@ -658,13 +660,13 @@ func runMetaPipeOut(ctx context.Context, client storage.Client, u *uri.URI) erro
 		return err
 	}
 
-	_, err = os.Stdout.Write(yamlBytes)
+	_, err = out.Write(yamlBytes)
 	return err
 }
 
-func runMetaPipeIn(ctx context.Context, client storage.Client, u *uri.URI, f *flags) error {
-	// Read YAML from stdin
-	newYAML, err := io.ReadAll(os.Stdin)
+func runMetaPipeIn(ctx context.Context, client storage.Client, u *uri.URI, f *flags, in io.Reader, openConfirm func() (io.ReadCloser, error)) error {
+	// Read YAML from input
+	newYAML, err := io.ReadAll(in)
 	if err != nil {
 		return fmt.Errorf("reading stdin: %w", err)
 	}
@@ -708,7 +710,7 @@ func runMetaPipeIn(ctx context.Context, client storage.Client, u *uri.URI, f *fl
 
 	// Confirm via /dev/tty
 	if !f.yes {
-		tty, err := os.Open("/dev/tty")
+		tty, err := openConfirm()
 		if err != nil {
 			return fmt.Errorf("cannot open terminal for confirmation (use --yes to skip): %w", err)
 		}
