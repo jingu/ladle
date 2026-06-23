@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/aws/smithy-go"
 )
 
@@ -81,6 +82,21 @@ func inspect(err error) (Kind, string, string) {
 		}
 	}
 
+	// Check Azure SDK response errors
+	var azErr *azcore.ResponseError
+	if errors.As(err, &azErr) {
+		if kind := classifyAPICode(azErr.ErrorCode); kind != KindUnknown {
+			return kind, azErr.ErrorCode, err.Error()
+		}
+		if kind := classifyHTTPStatus(azErr.StatusCode); kind != KindUnknown {
+			code := azErr.ErrorCode
+			if code == "" {
+				code = fmt.Sprintf("HTTP %d", azErr.StatusCode)
+			}
+			return kind, code, err.Error()
+		}
+	}
+
 	// Check HTTP response errors for status-code-based classification
 	var httpErr *smithy.OperationError
 	if errors.As(err, &httpErr) {
@@ -111,7 +127,10 @@ func classifyAPICode(code string) Kind {
 		"MissingAuthenticationToken",
 		"ExpiredToken",
 		"ExpiredTokenException",
-		"InvalidIdentityToken":
+		"InvalidIdentityToken",
+		// Azure
+		"AuthenticationFailed",
+		"InvalidAuthenticationInfo":
 		return KindAuth
 
 	// Permission
@@ -120,7 +139,12 @@ func classifyAPICode(code string) Kind {
 		"AccountProblem",
 		"AllAccessDisabled",
 		"InvalidAccessKeyId",
-		"UnauthorizedAccess":
+		"UnauthorizedAccess",
+		// Azure
+		"AuthorizationFailure",
+		"AuthorizationPermissionMismatch",
+		"InsufficientAccountPermissions",
+		"AccountIsDisabled":
 		return KindPermission
 
 	// Not found
@@ -128,7 +152,10 @@ func classifyAPICode(code string) Kind {
 		"NoSuchKey",
 		"NotFound",
 		"NoSuchVersion",
-		"404":
+		"404",
+		// Azure
+		"BlobNotFound",
+		"ContainerNotFound":
 		return KindNotFound
 
 	// Throttling
@@ -136,14 +163,18 @@ func classifyAPICode(code string) Kind {
 		"Throttling",
 		"ThrottlingException",
 		"RequestLimitExceeded",
-		"TooManyRequestsException":
+		"TooManyRequestsException",
+		// Azure
+		"ServerBusy":
 		return KindThrottle
 
 	// Server errors
 	case "InternalError",
 		"InternalFailure",
 		"ServiceUnavailable",
-		"ServiceException":
+		"ServiceException",
+		// Azure
+		"OperationTimedOut":
 		return KindServer
 	}
 	return KindUnknown
@@ -176,7 +207,7 @@ func isNetworkError(err error) bool {
 func hintFor(kind Kind) string {
 	switch kind {
 	case KindAuth:
-		return "Check your credentials. Run 'aws configure' or verify AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY environment variables. You can also try --profile to use a named profile."
+		return "Check your credentials. For AWS, run 'aws configure' or verify AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (or try --profile). For Azure, run 'az login' or verify AZURE_STORAGE_* environment variables."
 	case KindPermission:
 		return "You don't have permission for this operation. Check the IAM policy attached to your credentials, or verify the bucket policy allows access."
 	case KindNotFound:
