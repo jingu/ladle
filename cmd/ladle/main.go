@@ -764,6 +764,7 @@ func bucketCacheKey(scheme uri.Scheme, profile, account string) string {
 }
 
 func bucketCachePath(key string) string {
+	key = sanitizeCacheKey(key)
 	if key == "" {
 		key = "default"
 	}
@@ -772,6 +773,20 @@ func bucketCachePath(key string) string {
 		return ""
 	}
 	return filepath.Join(home, ".cache", "ladle", "buckets_"+key+".cache")
+}
+
+// sanitizeCacheKey reduces a cache key to a safe filename component. The key is
+// derived from user-controlled values (profile, account), so path separators or
+// ".." must not be able to escape the cache directory.
+func sanitizeCacheKey(key string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			return r
+		default:
+			return '_'
+		}
+	}, key)
 }
 
 func loadBucketCache(key string) ([]string, error) {

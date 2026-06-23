@@ -307,10 +307,13 @@ func (c *AzblobClient) ListVersions(ctx context.Context, bucket, key string) ([]
 			if item.Name == nil || *item.Name != key {
 				continue
 			}
-			ov := storage.ObjectVersion{IsLatest: true}
+			ov := storage.ObjectVersion{}
 			if item.VersionID != nil {
 				ov.VersionID = *item.VersionID
 			}
+			// Azure marks only the current version with IsCurrentVersion=true and
+			// omits the field (nil) on non-current versions. Default to false and
+			// derive solely from IsCurrentVersion to avoid marking every version latest.
 			if item.IsCurrentVersion != nil {
 				ov.IsLatest = *item.IsCurrentVersion
 			}
