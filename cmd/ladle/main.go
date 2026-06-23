@@ -568,7 +568,7 @@ func runPipeIn(ctx context.Context, client storage.Client, u *uri.URI, f *flags,
 	// Read all input
 	newContent, err := io.ReadAll(in)
 	if err != nil {
-		return fmt.Errorf("reading stdin: %w", err)
+		return fmt.Errorf("reading input: %w", err)
 	}
 	modified := string(newContent)
 
@@ -668,7 +668,7 @@ func runMetaPipeIn(ctx context.Context, client storage.Client, u *uri.URI, f *fl
 	// Read YAML from input
 	newYAML, err := io.ReadAll(in)
 	if err != nil {
-		return fmt.Errorf("reading stdin: %w", err)
+		return fmt.Errorf("reading input: %w", err)
 	}
 
 	// Validate YAML by parsing
