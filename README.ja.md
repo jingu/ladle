@@ -12,10 +12,11 @@
 
 [English](README.md)
 
-**S3上のファイルをターミナルから直接編集。コマンド一発。**
+**S3 と Azure Blob Storage 上のファイルをターミナルから直接編集。コマンド一発。**
 
 ```bash
 ladle s3://mybucket/config.json
+ladle az://mycontainer/config.json
 ```
 
 ダウンロード、エディタで編集、差分確認、アップロード — すべてワンコマンド。
@@ -177,12 +178,12 @@ $ ladle s3://myapp/
 | Download to... | ローカルディレクトリにダウンロード（タブ補完対応） |
 | Copy to... | 同一バケット内の別キーにコピー |
 | Move to... | 同一バケット内の別キーに移動 |
-| Versions | バージョン履歴を表示し、過去のバージョンに復元（S3バージョニング） |
+| Versions | バージョン履歴を表示し、過去のバージョンに復元（S3 / Azure Blob バージョニング） |
 | Delete | オブジェクトを削除（確認あり） |
 
 ### バージョン履歴
 
-S3オブジェクトの過去のバージョンを表示・復元できます（バケットでS3バージョニングが有効である必要があります）。
+オブジェクトの過去のバージョンを表示・復元できます（バージョニングが有効である必要があります — S3 のバケットバージョニング、または Azure Blob バージョニング）。
 
 ```bash
 # バージョン履歴を直接表示
@@ -245,19 +246,46 @@ ladle --endpoint-url http://localhost:9000 s3://bucket/file.html   # MinIO
 ladle --no-sign-request s3://public-bucket/file.html
 ```
 
+## Azure Blob Storage
+
+`az://` スキームで Azure Blob Storage に対応しています。コンテナがバケットに、Blob がキーに対応します:
+
+```bash
+ladle --account myaccount az://container/path/to/file.html
+ladle az://container/path/to/file.html        # AZURE_STORAGE_ACCOUNT 設定時
+ladle az://                                    # コンテナ一覧
+```
+
+ストレージアカウントと認証情報は次の優先順位で解決されます:
+
+1. `AZURE_STORAGE_CONNECTION_STRING` — 接続文字列
+2. アカウント名（`--account` または `AZURE_STORAGE_ACCOUNT`）+ `AZURE_STORAGE_KEY` — 共有キー
+3. アカウント名 + `AZURE_STORAGE_SAS_TOKEN` — SAS トークン
+4. アカウント名 + Azure AD（`DefaultAzureCredential`。例: `az login` や Managed Identity）
+
+```bash
+export AZURE_STORAGE_ACCOUNT=myaccount
+export AZURE_STORAGE_KEY=...                  # または
+export AZURE_STORAGE_CONNECTION_STRING=...    # または Azure AD なら `az login` のみ
+ladle az://container/file.html
+```
+
+Azurite エミュレータを使う場合は `--endpoint-url` を指定します。
+
 ## フラグ一覧
 
 | フラグ | 短縮 | 説明 |
 |--------|------|------|
 | `--meta` | | ファイル本体ではなくメタデータを編集 |
-| `--versions` | | ファイルのバージョン履歴を表示（S3バージョニング） |
+| `--versions` | | ファイルのバージョン履歴を表示（S3 / Azure Blob バージョニング） |
 | `--editor` | | エディタコマンドを指定（環境変数より優先） |
 | `--yes` | `-y` | 確認プロンプトをスキップ |
 | `--dry-run` | | アップロードせずにdiffのみ表示 |
 | `--force` | | バイナリファイルでも強制的に編集 |
 | `--profile` | | AWS named profile |
 | `--region` | | AWSリージョン |
-| `--endpoint-url` | | カスタムエンドポイントURL（MinIO, LocalStack等） |
+| `--account` | | Azure ストレージアカウント名（または `AZURE_STORAGE_ACCOUNT`） |
+| `--endpoint-url` | | カスタムエンドポイントURL（MinIO, LocalStack, Azurite等） |
 | `--no-sign-request` | | 署名なしリクエスト |
 | `--install-completion` | | シェル補完スクリプトを生成 (bash\|zsh\|fish) |
 
@@ -286,7 +314,7 @@ ladle --install-completion fish > ~/.config/fish/completions/ladle.fish
 
 ## 今後の予定
 
-- GCS (`gs://`), Azure Blob (`az://`), Cloudflare R2 (`r2://`) バックエンド
+- GCS (`gs://`), Cloudflare R2 (`r2://`) バックエンド
 - 複数ファイルの一括編集
 - `ladle compare` による2ファイルのリモートdiff
 

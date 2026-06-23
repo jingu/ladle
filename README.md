@@ -12,10 +12,11 @@
 
 [日本語](README.ja.md)
 
-**Edit S3 files directly from your terminal. One command.**
+**Edit S3 and Azure Blob Storage files directly from your terminal. One command.**
 
 ```bash
 ladle s3://mybucket/config.json
+ladle az://mycontainer/config.json
 ```
 
 Download, edit in your favorite editor, diff, confirm, upload — all in one shot.
@@ -177,12 +178,12 @@ Press `→` on a file to open the context menu:
 | Download to... | Download to a local directory (tab completion supported) |
 | Copy to... | Copy to another key in the same bucket |
 | Move to... | Move to another key in the same bucket |
-| Versions | View version history and restore a previous version (S3 versioning) |
+| Versions | View version history and restore a previous version (S3 / Azure Blob versioning) |
 | Delete | Delete the object (with confirmation) |
 
 ### Version history
 
-View and restore previous versions of S3 objects (requires S3 versioning enabled on the bucket).
+View and restore previous versions of objects (requires versioning enabled — S3 bucket versioning or Azure Blob versioning).
 
 ```bash
 # Open version history directly
@@ -245,19 +246,47 @@ ladle --endpoint-url http://localhost:9000 s3://bucket/file.html   # MinIO
 ladle --no-sign-request s3://public-bucket/file.html
 ```
 
+## Azure Blob Storage
+
+ladle supports Azure Blob Storage via the `az://` scheme, where the container
+maps to the bucket and the blob maps to the key:
+
+```bash
+ladle --account myaccount az://container/path/to/file.html
+ladle az://container/path/to/file.html        # with AZURE_STORAGE_ACCOUNT set
+ladle az://                                    # list containers
+```
+
+The storage account and credentials are resolved in this priority order:
+
+1. `AZURE_STORAGE_CONNECTION_STRING` — full connection string
+2. account name (`--account` or `AZURE_STORAGE_ACCOUNT`) + `AZURE_STORAGE_KEY` — shared key
+3. account name + `AZURE_STORAGE_SAS_TOKEN` — SAS token
+4. account name + Azure AD (`DefaultAzureCredential`, e.g. `az login` or Managed Identity)
+
+```bash
+export AZURE_STORAGE_ACCOUNT=myaccount
+export AZURE_STORAGE_KEY=...                  # or
+export AZURE_STORAGE_CONNECTION_STRING=...    # or just `az login` for Azure AD
+ladle az://container/file.html
+```
+
+Use `--endpoint-url` to target the Azurite emulator.
+
 ## Flags
 
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--meta` | | Edit object metadata instead of file content |
-| `--versions` | | Show version history for a file (S3 versioning) |
+| `--versions` | | Show version history for a file (S3 / Azure Blob versioning) |
 | `--editor` | | Editor command (overrides env vars) |
 | `--yes` | `-y` | Skip confirmation prompt |
 | `--dry-run` | | Show diff without uploading |
 | `--force` | | Force editing of binary files |
 | `--profile` | | AWS named profile |
 | `--region` | | AWS region |
-| `--endpoint-url` | | Custom endpoint URL (MinIO, LocalStack, etc.) |
+| `--account` | | Azure storage account name (or `AZURE_STORAGE_ACCOUNT`) |
+| `--endpoint-url` | | Custom endpoint URL (MinIO, LocalStack, Azurite, etc.) |
 | `--no-sign-request` | | Do not sign requests |
 | `--install-completion` | | Generate shell completion script (bash\|zsh\|fish) |
 
@@ -286,7 +315,7 @@ ladle --install-completion fish > ~/.config/fish/completions/ladle.fish
 
 ## Future Plans
 
-- GCS (`gs://`), Azure Blob (`az://`), Cloudflare R2 (`r2://`) backends
+- GCS (`gs://`), Cloudflare R2 (`r2://`) backends
 - Multi-file batch editing
 - `ladle compare` for diffing two remote files
 

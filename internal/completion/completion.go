@@ -37,28 +37,33 @@ _ladle_completions() {
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
     cmd="${COMP_WORDS[0]}"
-    opts="--meta --editor --profile --region --endpoint-url --no-sign-request --yes --force --dry-run --help --version"
+    opts="--meta --versions --editor --profile --region --account --endpoint-url --no-sign-request --yes --force --dry-run --help --version"
 
-    # Extract --profile value from command line
-    local profile_arg=""
+    # Extract --profile and --account values from command line
+    local profile_arg="" account_arg=""
     for ((i=0; i<${#COMP_WORDS[@]}; i++)); do
         if [[ "${COMP_WORDS[$i]}" == "--profile" ]]; then
             profile_arg="--profile ${COMP_WORDS[$((i+1))]}"
         elif [[ "${COMP_WORDS[$i]}" == --profile=* ]]; then
             profile_arg="--profile ${COMP_WORDS[$i]#--profile=}"
+        elif [[ "${COMP_WORDS[$i]}" == "--account" ]]; then
+            account_arg="--account ${COMP_WORDS[$((i+1))]}"
+        elif [[ "${COMP_WORDS[$i]}" == --account=* ]]; then
+            account_arg="--account ${COMP_WORDS[$i]#--account=}"
         fi
     done
 
-    # Complete S3 URIs
-    if [[ "$cur" == s3://* ]]; then
-        local bucket_and_path="${cur#s3://}"
+    # Complete cloud storage URIs (s3:// or az://)
+    if [[ "$cur" == s3://* || "$cur" == az://* ]]; then
+        local scheme="${cur%%://*}"
+        local bucket_and_path="${cur#*://}"
         local bucket="${bucket_and_path%%/*}"
 
         if [[ "$bucket_and_path" == */* ]]; then
             # Complete keys within bucket
             local prefix="${bucket_and_path#*/}"
             local result
-            result=$("$cmd" --complete-path $profile_arg "s3://${bucket}/${prefix}" 2>/dev/null)
+            result=$("$cmd" --complete-path $profile_arg $account_arg "${scheme}://${bucket}/${prefix}" 2>/dev/null)
             if [[ -n "$result" ]]; then
                 while IFS= read -r line; do
                     COMPREPLY+=("$line")
@@ -67,10 +72,10 @@ _ladle_completions() {
         else
             # Complete bucket names
             local result
-            result=$("$cmd" --complete-bucket $profile_arg "s3://$bucket" 2>/dev/null)
+            result=$("$cmd" --complete-bucket $profile_arg $account_arg "${scheme}://$bucket" 2>/dev/null)
             if [[ -n "$result" ]]; then
                 while IFS= read -r b; do
-                    COMPREPLY+=("s3://${b}/")
+                    COMPREPLY+=("${scheme}://${b}/")
                 done <<< "$result"
             fi
         fi
@@ -78,7 +83,7 @@ _ladle_completions() {
     fi
 
     case "${prev}" in
-        --profile|--region|--endpoint-url|--editor)
+        --profile|--region|--account|--endpoint-url|--editor)
             return 0
             ;;
     esac
@@ -102,9 +107,11 @@ _ladle() {
     local -a opts
     opts=(
         '--meta[Edit metadata instead of file content]'
+        '--versions[Show version history for a file]'
         '--editor[Specify editor command]:editor:'
         '--profile[AWS named profile]:profile:'
         '--region[AWS region]:region:'
+        '--account[Azure storage account name]:account:'
         '--endpoint-url[Custom endpoint URL]:url:'
         '--no-sign-request[Do not sign requests]'
         '--yes[Skip confirmation prompt]'
@@ -121,30 +128,35 @@ _ladle_uri() {
     local cur="${words[CURRENT]}"
     local cmd="${words[1]}"
 
-    # Extract --profile value from command line
-    local -a profile_arg
+    # Extract --profile and --account values from command line
+    local -a profile_arg account_arg
     local -i i
     for ((i=1; i<$#words; i++)); do
         if [[ "${words[$i]}" == "--profile" ]]; then
             profile_arg=(--profile "${words[$((i+1))]}")
         elif [[ "${words[$i]}" == --profile=* ]]; then
             profile_arg=(--profile "${words[$i]#--profile=}")
+        elif [[ "${words[$i]}" == "--account" ]]; then
+            account_arg=(--account "${words[$((i+1))]}")
+        elif [[ "${words[$i]}" == --account=* ]]; then
+            account_arg=(--account "${words[$i]#--account=}")
         fi
     done
 
-    if [[ "$cur" == s3://* ]]; then
-        local bucket_and_path="${cur#s3://}"
+    if [[ "$cur" == s3://* || "$cur" == az://* ]]; then
+        local scheme="${cur%%://*}"
+        local bucket_and_path="${cur#*://}"
         local bucket="${bucket_and_path%%/*}"
 
         if [[ "$bucket_and_path" == */* ]]; then
             local prefix="${bucket_and_path#*/}"
             local -a completions
-            completions=(${(f)"$("$cmd" --complete-path $profile_arg "s3://${bucket}/${prefix}" 2>/dev/null)"})
+            completions=(${(f)"$("$cmd" --complete-path $profile_arg $account_arg "${scheme}://${bucket}/${prefix}" 2>/dev/null)"})
             compadd -S '' -q -- $completions
         else
             local -a buckets
-            buckets=(${(f)"$("$cmd" --complete-bucket $profile_arg "s3://$bucket" 2>/dev/null)"})
-            compadd -S '/' -q -- ${buckets[@]/#/s3://}
+            buckets=(${(f)"$("$cmd" --complete-bucket $profile_arg $account_arg "${scheme}://$bucket" 2>/dev/null)"})
+            compadd -S '/' -q -- ${buckets[@]/#/${scheme}://}
         fi
     else
         compadd -S '://' -- s3 gs az r2
@@ -161,9 +173,11 @@ compdef _ladle ./ladle
 func generateFish(w io.Writer) error {
 	script := `# ladle fish completion
 complete -c ladle -l meta -d 'Edit metadata instead of file content'
+complete -c ladle -l versions -d 'Show version history for a file'
 complete -c ladle -l editor -r -d 'Specify editor command'
 complete -c ladle -l profile -r -d 'AWS named profile'
 complete -c ladle -l region -r -d 'AWS region'
+complete -c ladle -l account -r -d 'Azure storage account name'
 complete -c ladle -l endpoint-url -r -d 'Custom endpoint URL'
 complete -c ladle -l no-sign-request -d 'Do not sign requests'
 complete -c ladle -s y -l yes -d 'Skip confirmation prompt'
@@ -176,24 +190,30 @@ function __ladle_complete_uri
     set -l cur (commandline -ct)
     set -l cmd (commandline -po)[1]
 
-    # Extract --profile value from command line
+    # Extract --profile and --account values from command line
     set -l profile_arg
+    set -l account_arg
     set -l tokens (commandline -po)
     for i in (seq (count $tokens))
         if test "$tokens[$i]" = "--profile"
             set profile_arg --profile $tokens[(math $i + 1)]
         else if string match -q '--profile=*' -- "$tokens[$i]"
             set profile_arg --profile (string replace '--profile=' '' -- "$tokens[$i]")
+        else if test "$tokens[$i]" = "--account"
+            set account_arg --account $tokens[(math $i + 1)]
+        else if string match -q '--account=*' -- "$tokens[$i]"
+            set account_arg --account (string replace '--account=' '' -- "$tokens[$i]")
         end
     end
 
-    if string match -q 's3://*' -- $cur
-        set -l bucket_and_path (string replace 's3://' '' -- $cur)
+    if string match -q 's3://*' -- $cur; or string match -q 'az://*' -- $cur
+        set -l scheme (string split '://' -- $cur)[1]
+        set -l bucket_and_path (string replace "$scheme://" '' -- $cur)
         if string match -q '*/*' -- $bucket_and_path
-            $cmd --complete-path $profile_arg $cur 2>/dev/null
+            $cmd --complete-path $profile_arg $account_arg $cur 2>/dev/null
         else
-            for b in ($cmd --complete-bucket $profile_arg "s3://$bucket_and_path" 2>/dev/null)
-                echo "s3://$b/"
+            for b in ($cmd --complete-bucket $profile_arg $account_arg "$scheme://$bucket_and_path" 2>/dev/null)
+                echo "$scheme://$b/"
             end
         end
     else

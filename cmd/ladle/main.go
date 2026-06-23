@@ -23,6 +23,7 @@ import (
 	"github.com/jingu/ladle/internal/meta"
 	"github.com/jingu/ladle/internal/spinner"
 	"github.com/jingu/ladle/internal/storage"
+	"github.com/jingu/ladle/internal/storage/azblobclient"
 	"github.com/jingu/ladle/internal/storage/s3client"
 	"github.com/jingu/ladle/internal/uri"
 	"github.com/spf13/cobra"
@@ -45,6 +46,7 @@ type flags struct {
 	editorCmd      string
 	profile        string
 	region         string
+	account        string
 	endpointURL    string
 	noSignRequest  bool
 	yes            bool
@@ -75,6 +77,8 @@ func newRootCmd() *cobra.Command {
 Edit cloud storage files directly from your terminal.
 Download, edit in your favorite editor, diff, confirm, upload — all in one shot.
 
+Supported backends: AWS S3 (s3://) and Azure Blob Storage (az://).
+
 Examples:
   ladle s3://bucket/path/to/file.html
   ladle --meta s3://bucket/path/to/file.html
@@ -85,7 +89,13 @@ Examples:
   ladle s3://bucket/path/to/file.html < local.html        # upload from local file
   ladle --meta s3://bucket/path/to/file.html > meta.yaml  # export metadata
   ladle --meta s3://bucket/path/to/file.html < meta.yaml  # import metadata
-  ladle --versions s3://bucket/path/to/file.html          # version history`,
+  ladle --versions s3://bucket/path/to/file.html          # version history
+
+Azure Blob Storage (container = bucket, blob = key):
+  ladle --account myaccount az://container/path/to/file.html
+  ladle az://container/path/to/file.html  # with AZURE_STORAGE_ACCOUNT set
+  ladle az://container/path/to/           # file browser mode
+  ladle az://                             # container list browser`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.MaximumNArgs(1),
@@ -99,7 +109,8 @@ Examples:
 	cmd.Flags().StringVar(&f.editorCmd, "editor", "", "Editor command (overrides LADLE_EDITOR/EDITOR/VISUAL)")
 	cmd.Flags().StringVar(&f.profile, "profile", "", "AWS named profile")
 	cmd.Flags().StringVar(&f.region, "region", "", "AWS region")
-	cmd.Flags().StringVar(&f.endpointURL, "endpoint-url", "", "Custom endpoint URL (e.g. for MinIO)")
+	cmd.Flags().StringVar(&f.account, "account", "", "Azure storage account name (or AZURE_STORAGE_ACCOUNT)")
+	cmd.Flags().StringVar(&f.endpointURL, "endpoint-url", "", "Custom endpoint URL (e.g. for MinIO or Azurite)")
 	cmd.Flags().BoolVar(&f.noSignRequest, "no-sign-request", false, "Do not sign requests")
 	cmd.Flags().BoolVarP(&f.yes, "yes", "y", false, "Skip confirmation prompt")
 	cmd.Flags().BoolVar(&f.force, "force", false, "Force editing of binary files")
@@ -138,7 +149,7 @@ func run(cmd *cobra.Command, args []string, f *flags) error {
 
 	// Handle internal completion helpers
 	if f.completeBucket {
-		return handleCompleteBucket(ctx, client, u, f.profile)
+		return handleCompleteBucket(ctx, client, u, f)
 	}
 	if f.completePath {
 		return handleCompletePath(ctx, client, u)
@@ -217,6 +228,11 @@ func newClient(ctx context.Context, u *uri.URI, f *flags) (storage.Client, error
 			Region:        f.region,
 			EndpointURL:   f.endpointURL,
 			NoSignRequest: f.noSignRequest,
+		})
+	case uri.SchemeAzure:
+		return azblobclient.New(ctx, azblobclient.Options{
+			Account:     f.account,
+			EndpointURL: f.endpointURL,
 		})
 	default:
 		return nil, fmt.Errorf("scheme %q is not yet supported (coming soon)", u.Scheme)
@@ -716,14 +732,15 @@ func runMetaPipeIn(ctx context.Context, client storage.Client, u *uri.URI, f *fl
 
 const bucketCacheTTL = 5 * time.Minute
 
-func handleCompleteBucket(ctx context.Context, client storage.Client, u *uri.URI, profile string) error {
-	buckets, err := loadBucketCache(profile)
+func handleCompleteBucket(ctx context.Context, client storage.Client, u *uri.URI, f *flags) error {
+	key := bucketCacheKey(u.Scheme, f.profile, f.account, f.endpointURL)
+	buckets, err := loadBucketCache(key)
 	if err != nil {
 		buckets, err = client.ListBuckets(ctx)
 		if err != nil {
 			return nil // Silently fail for completions
 		}
-		_ = saveBucketCache(profile, buckets)
+		_ = saveBucketCache(key, buckets)
 	}
 	for _, b := range buckets {
 		if strings.HasPrefix(b, u.Bucket) {
@@ -733,19 +750,55 @@ func handleCompleteBucket(ctx context.Context, client storage.Client, u *uri.URI
 	return nil
 }
 
-func bucketCachePath(profile string) string {
-	if profile == "" {
-		profile = "default"
+// bucketCacheKey namespaces the bucket cache by backend so that buckets from
+// different providers/accounts/endpoints do not collide. The endpoint is
+// included because the same scheme/profile can point at different backends
+// (e.g. real AWS vs MinIO/LocalStack, real Azure vs Azurite). Region and
+// no-sign-request are intentionally omitted: ListBuckets returns the account's
+// buckets regardless of region, and anonymous listing does not produce a
+// distinct usable result.
+func bucketCacheKey(scheme uri.Scheme, profile, account, endpoint string) string {
+	key := string(scheme)
+	if profile != "" {
+		key += "_" + profile
+	}
+	if account != "" {
+		key += "_" + account
+	}
+	if endpoint != "" {
+		key += "_" + endpoint
+	}
+	return key
+}
+
+func bucketCachePath(key string) string {
+	key = sanitizeCacheKey(key)
+	if key == "" {
+		key = "default"
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".cache", "ladle", "buckets_"+profile+".cache")
+	return filepath.Join(home, ".cache", "ladle", "buckets_"+key+".cache")
 }
 
-func loadBucketCache(profile string) ([]string, error) {
-	p := bucketCachePath(profile)
+// sanitizeCacheKey reduces a cache key to a safe filename component. The key is
+// derived from user-controlled values (profile, account), so path separators or
+// ".." must not be able to escape the cache directory.
+func sanitizeCacheKey(key string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			return r
+		default:
+			return '_'
+		}
+	}, key)
+}
+
+func loadBucketCache(key string) ([]string, error) {
+	p := bucketCachePath(key)
 	info, err := os.Stat(p)
 	if err != nil {
 		return nil, err
@@ -764,8 +817,8 @@ func loadBucketCache(profile string) ([]string, error) {
 	return strings.Split(content, "\n"), nil
 }
 
-func saveBucketCache(profile string, buckets []string) error {
-	p := bucketCachePath(profile)
+func saveBucketCache(key string, buckets []string) error {
+	p := bucketCachePath(key)
 	if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
 		return err
 	}

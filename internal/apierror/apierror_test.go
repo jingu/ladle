@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/aws/smithy-go"
 )
 
@@ -73,6 +74,50 @@ func TestClassify_APIErrors(t *testing.T) {
 			}
 			if apiErr.Message != tt.message {
 				t.Errorf("Message = %q, want %q", apiErr.Message, tt.message)
+			}
+			if apiErr.Hint == "" {
+				t.Error("Hint is empty, expected a hint")
+			}
+		})
+	}
+}
+
+func TestClassify_AzureErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		errorCode  string
+		statusCode int
+		wantKind   Kind
+		wantCode   string
+	}{
+		// Classified by Azure error code
+		{"blob not found", "BlobNotFound", 404, KindNotFound, "BlobNotFound"},
+		{"container not found", "ContainerNotFound", 404, KindNotFound, "ContainerNotFound"},
+		{"authentication failed", "AuthenticationFailed", 403, KindAuth, "AuthenticationFailed"},
+		{"authorization failure", "AuthorizationFailure", 403, KindPermission, "AuthorizationFailure"},
+		{"server busy", "ServerBusy", 503, KindThrottle, "ServerBusy"},
+		// Classified by HTTP status when the code is unrecognized
+		{"unknown 404", "SomethingElse", 404, KindNotFound, "SomethingElse"},
+		{"unknown 403", "", 403, KindPermission, "HTTP 403"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := fmt.Errorf("downloading az://c/b: %w", &azcore.ResponseError{
+				ErrorCode:  tt.errorCode,
+				StatusCode: tt.statusCode,
+			})
+			got := Classify(raw)
+
+			var apiErr *Error
+			if !errors.As(got, &apiErr) {
+				t.Fatalf("Classify returned non-Error type: %T", got)
+			}
+			if apiErr.Kind != tt.wantKind {
+				t.Errorf("Kind = %d, want %d", apiErr.Kind, tt.wantKind)
+			}
+			if apiErr.Code != tt.wantCode {
+				t.Errorf("Code = %q, want %q", apiErr.Code, tt.wantCode)
 			}
 			if apiErr.Hint == "" {
 				t.Error("Hint is empty, expected a hint")
