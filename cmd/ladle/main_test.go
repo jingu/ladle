@@ -3,7 +3,28 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/jingu/ladle/internal/uri"
 )
+
+func TestBucketCacheKey(t *testing.T) {
+	// Same scheme/profile/account but different endpoints must not share a key.
+	aws := bucketCacheKey(uri.SchemeS3, "prod", "", "")
+	minio := bucketCacheKey(uri.SchemeS3, "prod", "", "http://localhost:9000")
+	if aws == minio {
+		t.Errorf("AWS and MinIO keys collide: %q", aws)
+	}
+
+	// Different providers must not share a key.
+	if bucketCacheKey(uri.SchemeS3, "", "", "") == bucketCacheKey(uri.SchemeAzure, "", "", "") {
+		t.Error("s3 and az keys collide")
+	}
+
+	// Different Azure accounts must not share a key.
+	if bucketCacheKey(uri.SchemeAzure, "", "acct1", "") == bucketCacheKey(uri.SchemeAzure, "", "acct2", "") {
+		t.Error("distinct Azure accounts collide")
+	}
+}
 
 func TestSanitizeCacheKey(t *testing.T) {
 	tests := []struct {

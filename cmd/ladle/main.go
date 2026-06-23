@@ -733,7 +733,7 @@ func runMetaPipeIn(ctx context.Context, client storage.Client, u *uri.URI, f *fl
 const bucketCacheTTL = 5 * time.Minute
 
 func handleCompleteBucket(ctx context.Context, client storage.Client, u *uri.URI, f *flags) error {
-	key := bucketCacheKey(u.Scheme, f.profile, f.account)
+	key := bucketCacheKey(u.Scheme, f.profile, f.account, f.endpointURL)
 	buckets, err := loadBucketCache(key)
 	if err != nil {
 		buckets, err = client.ListBuckets(ctx)
@@ -751,14 +751,22 @@ func handleCompleteBucket(ctx context.Context, client storage.Client, u *uri.URI
 }
 
 // bucketCacheKey namespaces the bucket cache by backend so that buckets from
-// different providers/accounts (e.g. s3 vs az) do not collide.
-func bucketCacheKey(scheme uri.Scheme, profile, account string) string {
+// different providers/accounts/endpoints do not collide. The endpoint is
+// included because the same scheme/profile can point at different backends
+// (e.g. real AWS vs MinIO/LocalStack, real Azure vs Azurite). Region and
+// no-sign-request are intentionally omitted: ListBuckets returns the account's
+// buckets regardless of region, and anonymous listing does not produce a
+// distinct usable result.
+func bucketCacheKey(scheme uri.Scheme, profile, account, endpoint string) string {
 	key := string(scheme)
 	if profile != "" {
 		key += "_" + profile
 	}
 	if account != "" {
 		key += "_" + account
+	}
+	if endpoint != "" {
+		key += "_" + endpoint
 	}
 	return key
 }
