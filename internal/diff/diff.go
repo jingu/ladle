@@ -7,28 +7,57 @@ import (
 	"strings"
 )
 
-// Generate produces a unified diff between two texts.
-func Generate(original, modified, labelOrig, labelMod string) string {
+const (
+	// maxDiffLines caps the per-side line count fed to the O(n*m) LCS algorithm.
+	// It is applied after trimming common leading/trailing lines, so a localized
+	// edit in a huge file still produces a diff; only a genuinely large changed
+	// region is skipped to avoid pathological memory/time use.
+	maxDiffLines = 5000
+	// maxDiffBytes caps the byte size of the changed region. It guards against a
+	// few enormous lines that are cheap for LCS but huge to render.
+	maxDiffBytes = 2 << 20 // 2 MiB
+)
+
+// Generate produces a unified diff between two texts. The second return value is
+// true when the changed region is too large to diff; in that case the diff text
+// is empty and the caller should skip showing a diff (the texts still differ).
+func Generate(original, modified, labelOrig, labelMod string) (string, bool) {
 	origLines := splitLines(original)
 	modLines := splitLines(modified)
 
-	edits := lcsEdits(origLines, modLines)
+	// Trim common leading/trailing lines so only the changed region goes through
+	// the quadratic LCS. This keeps diffs cheap for localized edits in large files.
+	pre := commonPrefix(origLines, modLines)
+	suf := commonSuffix(origLines[pre:], modLines[pre:])
+	origMid := origLines[pre : len(origLines)-suf]
+	modMid := modLines[pre : len(modLines)-suf]
 
-	// Check if there are any actual changes
-	hasChanges := false
-	for _, e := range edits {
-		if e.op != ' ' {
-			hasChanges = true
-			break
-		}
-	}
-	if !hasChanges {
-		return ""
+	if len(origMid) == 0 && len(modMid) == 0 {
+		return "", false
 	}
 
-	hunks := buildHunks(edits, 3)
+	// Skip the diff if the changed region is too large in either dimension.
+	if len(origMid) > maxDiffLines || len(modMid) > maxDiffLines ||
+		byteLen(origMid) > maxDiffBytes || byteLen(modMid) > maxDiffBytes {
+		return "", true
+	}
+
+	edits := lcsEdits(origMid, modMid)
+
+	// Re-attach the trimmed common lines as context so hunk line numbers are
+	// correct. This is linear work; only lcsEdits above is quadratic.
+	full := make([]edit, 0, pre+len(edits)+suf)
+	for _, l := range origLines[:pre] {
+		full = append(full, edit{' ', l})
+	}
+	full = append(full, edits...)
+	for _, l := range origLines[len(origLines)-suf:] {
+		full = append(full, edit{' ', l})
+	}
+
+	hunks := buildHunks(full, 3)
 	if len(hunks) == 0 {
-		return ""
+		return "", false
 	}
 
 	var sb strings.Builder
@@ -38,7 +67,7 @@ func Generate(original, modified, labelOrig, labelMod string) string {
 	for _, h := range hunks {
 		sb.WriteString(h.String())
 	}
-	return sb.String()
+	return sb.String(), false
 }
 
 // Print writes a colored diff to the given writer.
@@ -57,6 +86,35 @@ func Print(w io.Writer, diffText string) {
 			_, _ = fmt.Fprintln(w, line)
 		}
 	}
+}
+
+// commonPrefix returns the number of identical leading lines in a and b.
+func commonPrefix(a, b []string) int {
+	n := min(len(a), len(b))
+	i := 0
+	for i < n && a[i] == b[i] {
+		i++
+	}
+	return i
+}
+
+// commonSuffix returns the number of identical trailing lines in a and b.
+func commonSuffix(a, b []string) int {
+	n := min(len(a), len(b))
+	i := 0
+	for i < n && a[len(a)-1-i] == b[len(b)-1-i] {
+		i++
+	}
+	return i
+}
+
+// byteLen returns the total byte size of lines, counting one newline per line.
+func byteLen(lines []string) int {
+	total := 0
+	for _, l := range lines {
+		total += len(l) + 1
+	}
+	return total
 }
 
 func splitLines(s string) []string {
