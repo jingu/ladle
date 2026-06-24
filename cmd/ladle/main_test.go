@@ -9,20 +9,25 @@ import (
 
 func TestBucketCacheKey(t *testing.T) {
 	// Same scheme/profile/account but different endpoints must not share a key.
-	aws := bucketCacheKey(uri.SchemeS3, "prod", "", "")
-	minio := bucketCacheKey(uri.SchemeS3, "prod", "", "http://localhost:9000")
+	aws := bucketCacheKey(uri.SchemeS3, "prod", "", "", "")
+	minio := bucketCacheKey(uri.SchemeS3, "prod", "", "", "http://localhost:9000")
 	if aws == minio {
 		t.Errorf("AWS and MinIO keys collide: %q", aws)
 	}
 
 	// Different providers must not share a key.
-	if bucketCacheKey(uri.SchemeS3, "", "", "") == bucketCacheKey(uri.SchemeAzure, "", "", "") {
+	if bucketCacheKey(uri.SchemeS3, "", "", "", "") == bucketCacheKey(uri.SchemeAzure, "", "", "", "") {
 		t.Error("s3 and az keys collide")
 	}
 
 	// Different Azure accounts must not share a key.
-	if bucketCacheKey(uri.SchemeAzure, "", "acct1", "") == bucketCacheKey(uri.SchemeAzure, "", "acct2", "") {
+	if bucketCacheKey(uri.SchemeAzure, "", "acct1", "", "") == bucketCacheKey(uri.SchemeAzure, "", "acct2", "", "") {
 		t.Error("distinct Azure accounts collide")
+	}
+
+	// Different GCP projects must not share a key.
+	if bucketCacheKey(uri.SchemeGCS, "", "", "proj1", "") == bucketCacheKey(uri.SchemeGCS, "", "", "proj2", "") {
+		t.Error("distinct GCP projects collide")
 	}
 }
 

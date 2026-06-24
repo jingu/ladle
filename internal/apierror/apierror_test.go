@@ -6,8 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"cloud.google.com/go/storage"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/aws/smithy-go"
+	"google.golang.org/api/googleapi"
 )
 
 // mockAPIError implements smithy.APIError for testing.
@@ -123,6 +125,56 @@ func TestClassify_AzureErrors(t *testing.T) {
 				t.Error("Hint is empty, expected a hint")
 			}
 		})
+	}
+}
+
+func TestClassify_GCSErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		wantKind   Kind
+	}{
+		{"not found", 404, KindNotFound},
+		{"forbidden", 403, KindPermission},
+		{"unauthorized", 401, KindAuth},
+		{"too many requests", 429, KindThrottle},
+		{"server error", 503, KindServer},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := fmt.Errorf("downloading gs://b/k: %w", &googleapi.Error{
+				Code:    tt.statusCode,
+				Message: "boom",
+			})
+			got := Classify(raw)
+
+			var apiErr *Error
+			if !errors.As(got, &apiErr) {
+				t.Fatalf("Classify returned non-Error type: %T", got)
+			}
+			if apiErr.Kind != tt.wantKind {
+				t.Errorf("Kind = %d, want %d", apiErr.Kind, tt.wantKind)
+			}
+			if apiErr.Hint == "" {
+				t.Error("Hint is empty, expected a hint")
+			}
+		})
+	}
+}
+
+func TestClassify_GCSSentinelErrors(t *testing.T) {
+	for _, sentinel := range []error{storage.ErrObjectNotExist, storage.ErrBucketNotExist} {
+		raw := fmt.Errorf("downloading gs://b/k: %w", sentinel)
+		got := Classify(raw)
+
+		var apiErr *Error
+		if !errors.As(got, &apiErr) {
+			t.Fatalf("Classify returned non-Error type: %T", got)
+		}
+		if apiErr.Kind != KindNotFound {
+			t.Errorf("Kind = %d, want KindNotFound (%d)", apiErr.Kind, KindNotFound)
+		}
 	}
 }
 
