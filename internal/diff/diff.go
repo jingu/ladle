@@ -108,11 +108,17 @@ func commonSuffix(a, b []string) int {
 	return i
 }
 
-// byteLen returns the total byte size of lines, counting one newline per line.
+// byteLen returns the byte size of lines, counting only the newlines between
+// them (the original trailing newline, if any, is dropped by splitLines and not
+// reconstructed here). Used as a coarse size guard, so an exact count is not
+// required; this avoids over-counting when the input had no trailing newline.
 func byteLen(lines []string) int {
-	total := 0
+	if len(lines) == 0 {
+		return 0
+	}
+	total := len(lines) - 1 // newlines between lines
 	for _, l := range lines {
-		total += len(l) + 1
+		total += len(l)
 	}
 	return total
 }
