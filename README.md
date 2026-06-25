@@ -112,7 +112,16 @@ ladle --meta s3://myapp/index.html < meta.yaml
 
 # Transform and re-upload
 ladle s3://myapp/config.json | jq '.debug = true' | ladle --yes s3://myapp/config.json
+
+# List objects/buckets to stdout (one URI per line; directories keep trailing /)
+ladle s3://myapp/config/       # objects + subdirectories under config/
+ladle s3://                    # all buckets, as s3://<bucket>/
+
+# List an object's versions to stdout (tab-separated: id, modified, size, latest, delete-marker)
+ladle --versions s3://myapp/config.json
 ```
+
+When stdout is redirected, a directory URI (or bare scheme) prints a listing and `--versions` prints version history, instead of opening the interactive TUI.
 
 When stdin is redirected, confirmation reads from `/dev/tty`. Use `--yes` to skip in non-interactive environments. If the object doesn't exist yet, stdin upload creates it as a new object.
 
@@ -339,6 +348,24 @@ ladle --install-completion zsh >> ~/.zshrc
 
 # fish
 ladle --install-completion fish > ~/.config/fish/completions/ladle.fish
+```
+
+## Agent Skill
+
+ladle ships an [Agent Skill](https://docs.claude.com/en/docs/claude-code/skills) that teaches AI coding agents how to read, edit, and inspect cloud storage objects with ladle (using pipe mode so it works non-interactively).
+
+```bash
+# Install for Claude Code (user-global: ~/.claude/skills/ladle/SKILL.md)
+ladle skill install
+
+# Install into the current project (.claude/skills/ladle/SKILL.md)
+ladle skill install --project
+
+# Overwrite an existing install
+ladle skill install --force
+
+# Print the skill to stdout
+ladle skill show
 ```
 
 ## Future Plans

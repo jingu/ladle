@@ -53,6 +53,7 @@ All storage operations go through `internal/storage.Client` interface. This is t
 | `internal/contenttype` | MIME type detection from file extensions |
 | `internal/browser` | Bubbletea TUI file browser with tree navigation and `/` filter |
 | `internal/completion` | Shell completion scripts for bash/zsh/fish |
+| `internal/skill` | Embedded `SKILL.md` (Agent Skill) + installer for AI coding agents (`ladle skill install`) |
 
 ### Workflow
 
@@ -67,6 +68,10 @@ All storage operations go through `internal/storage.Client` interface. This is t
 **Meta pipe out** (`runMetaPipeOut`): HeadObject -> YAML marshal -> stdout.
 
 **Meta pipe in** (`runMetaPipeIn`): Read YAML from stdin -> parse/validate -> HeadObject for diff -> diff -> confirm via `/dev/tty` -> UpdateMetadata.
+
+**List out** (`runListOut`): When stdout is not a terminal, a directory URI / bare scheme prints a listing (one URI per line, dirs keep trailing `/`) instead of opening the browser. Bucket list uses `ListBuckets`; otherwise `List` with `/` delimiter. Output is sorted.
+
+**Versions out** (`runVersionsOut`): When stdout is not a terminal, `--versions <file>` prints `ListVersions` as tab-separated lines (versionID, RFC3339 UTC mtime, size, LATEST/-, DELETE_MARKER/-) instead of the TUI.
 
 **Browser** (`runBrowser`): Bubbletea TUI program. `model` (Elm architecture) handles tree state, cursor, filter. `Browser` struct manages S3 listing and navigation. Edit suspends TUI via `tea.Exec`, resumes after. `runBrowser` accepts variadic `RunOption` for optional features like `WithVersionsKey`.
 
