@@ -17,8 +17,11 @@ shows a diff, and uploads it back. Supported backends:
 Without a pipe, `ladle <uri>` opens `$EDITOR` and a TUI browser. Those require a
 real terminal and **cannot** be driven by an agent. Always go through stdin/stdout.
 
-Only **one** of stdin/stdout may be redirected per invocation — redirecting both is
-an error. So read and write are separate commands.
+When **reading or writing a single object's content/metadata**, redirect only one
+of stdin/stdout per invocation — redirecting both is an error, because it makes the
+intent (download vs upload) ambiguous. So content read and write are separate
+commands. (Listings and `--versions` never read stdin, so this does not apply to
+them.)
 
 ## Agent rule: never skip confirmation on your own
 

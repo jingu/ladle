@@ -231,6 +231,10 @@ func run(cmd *cobra.Command, args []string, f *flags) error {
 
 	// Detect pipe/redirect early: listings and version history print to stdout
 	// when stdout is not a terminal, instead of opening the interactive TUI.
+	// These are read-only and never consume stdin, so they run regardless of
+	// stdin's state. The stdin+stdout both-redirected guard below only applies to
+	// content/metadata read-or-write, where redirecting both makes the intended
+	// mode (download vs upload) ambiguous.
 	stdoutPiped := !isTerminal(os.Stdout)
 	stdinPiped := !isTerminal(os.Stdin)
 
@@ -279,6 +283,8 @@ func run(cmd *cobra.Command, args []string, f *flags) error {
 		}
 	}
 
+	// From here on we operate on a single object's content/metadata. Redirecting
+	// both stdin and stdout makes the intent (download vs upload) ambiguous.
 	if stdoutPiped && stdinPiped {
 		return fmt.Errorf("both stdin and stdout are redirected; this is not supported")
 	}
