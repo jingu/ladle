@@ -113,12 +113,13 @@ ladle --meta s3://myapp/index.html < meta.yaml
 # 変換して再アップロード
 ladle s3://myapp/config.json | jq '.debug = true' | ladle --yes s3://myapp/config.json
 
-# オブジェクト/バケットを stdout に一覧（1行1URI、ディレクトリは末尾 / 付き）
-ladle s3://myapp/config/       # config/ 配下のオブジェクトとサブディレクトリ
-ladle s3://                    # 全バケットを s3://<bucket>/ として
+# オブジェクト/バケットを一覧（1行1URI、ディレクトリは末尾 / 付き）。
+# stdout を非TTY にするためリダイレクトかパイプを使う（端末のままだと TUI ブラウザが開く）。
+ladle s3://myapp/config/ > objects.txt   # config/ 配下のオブジェクトとサブディレクトリ
+ladle s3:// | grep myapp                  # 全バケットを s3://<bucket>/ として
 
-# オブジェクトのバージョン履歴を stdout に一覧（タブ区切り: id, 更新日時, サイズ, latest, delete-marker）
-ladle --versions s3://myapp/config.json
+# オブジェクトのバージョン履歴を一覧（タブ区切り: id, 更新日時, サイズ, latest, delete-marker）
+ladle --versions s3://myapp/config.json > versions.tsv
 ```
 
 stdout がリダイレクトされている場合、ディレクトリ URI（やスキーマのみ）は一覧を、`--versions` はバージョン履歴を出力します（対話 TUI は開きません）。

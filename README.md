@@ -113,12 +113,13 @@ ladle --meta s3://myapp/index.html < meta.yaml
 # Transform and re-upload
 ladle s3://myapp/config.json | jq '.debug = true' | ladle --yes s3://myapp/config.json
 
-# List objects/buckets to stdout (one URI per line; directories keep trailing /)
-ladle s3://myapp/config/       # objects + subdirectories under config/
-ladle s3://                    # all buckets, as s3://<bucket>/
+# List objects/buckets (one URI per line; directories keep trailing /).
+# Redirect or pipe so stdout is non-TTY — a bare terminal opens the TUI browser instead.
+ladle s3://myapp/config/ > objects.txt   # objects + subdirectories under config/
+ladle s3:// | grep myapp                  # all buckets, as s3://<bucket>/
 
-# List an object's versions to stdout (tab-separated: id, modified, size, latest, delete-marker)
-ladle --versions s3://myapp/config.json
+# List an object's versions (tab-separated: id, modified, size, latest, delete-marker)
+ladle --versions s3://myapp/config.json > versions.tsv
 ```
 
 When stdout is redirected, a directory URI (or bare scheme) prints a listing and `--versions` prints version history, instead of opening the interactive TUI.

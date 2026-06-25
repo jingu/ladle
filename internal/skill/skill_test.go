@@ -100,6 +100,27 @@ func TestInstallUnsupportedAgent(t *testing.T) {
 	}
 }
 
+// TestInstallStatError checks that a non-NotExist stat failure (here ENOTDIR,
+// because the skill directory path is occupied by a regular file) is surfaced
+// rather than silently falling through to WriteFile.
+func TestInstallStatError(t *testing.T) {
+	dir := t.TempDir()
+	chdir(t, dir)
+
+	if err := os.MkdirAll(filepath.Join(".claude", "skills"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	// Occupy the would-be "ladle" directory with a file, so stat of
+	// .claude/skills/ladle/SKILL.md fails with ENOTDIR (not NotExist).
+	if err := os.WriteFile(filepath.Join(".claude", "skills", "ladle"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := Install(AgentClaude, ScopeProject, false); err == nil {
+		t.Error("expected error when stat of destination fails with a non-NotExist error")
+	}
+}
+
 // chdir switches into dir for the duration of the test, restoring the previous
 // working directory afterward.
 func chdir(t *testing.T, dir string) {

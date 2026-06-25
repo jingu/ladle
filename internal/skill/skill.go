@@ -3,6 +3,7 @@ package skill
 
 import (
 	_ "embed"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -74,8 +75,11 @@ func Install(agent Agent, scope Scope, force bool) (string, error) {
 	dest := filepath.Join(dir, "SKILL.md")
 
 	if !force {
-		if _, err := os.Stat(dest); err == nil {
+		switch _, err := os.Stat(dest); {
+		case err == nil:
 			return "", fmt.Errorf("%s already exists (use --force to overwrite)", dest)
+		case !errors.Is(err, os.ErrNotExist):
+			return "", fmt.Errorf("checking %s: %w", dest, err)
 		}
 	}
 
