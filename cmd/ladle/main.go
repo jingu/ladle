@@ -192,8 +192,8 @@ func newSkillShowCmd() *cobra.Command {
 		Short: "Print the ladle skill (SKILL.md) to stdout",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprint(os.Stdout, skill.Markdown())
-			return nil
+			_, err := fmt.Fprint(os.Stdout, skill.Markdown())
+			return err
 		},
 	}
 }
@@ -765,11 +765,7 @@ func runListOut(ctx context.Context, client storage.Client, u *uri.URI, out io.W
 		for _, b := range buckets {
 			lines = append(lines, fmt.Sprintf("%s://%s/", u.Scheme, b))
 		}
-		sort.Strings(lines)
-		for _, l := range lines {
-			fmt.Fprintln(out, l)
-		}
-		return nil
+		return writeLines(out, lines)
 	}
 
 	entries, err := client.List(ctx, u.Bucket, u.Key, "/")
@@ -780,9 +776,16 @@ func runListOut(ctx context.Context, client storage.Client, u *uri.URI, out io.W
 	for _, e := range entries {
 		lines = append(lines, fmt.Sprintf("%s://%s/%s", u.Scheme, u.Bucket, e.Key))
 	}
+	return writeLines(out, lines)
+}
+
+// writeLines sorts lines and writes each on its own line to out.
+func writeLines(out io.Writer, lines []string) error {
 	sort.Strings(lines)
 	for _, l := range lines {
-		fmt.Fprintln(out, l)
+		if _, err := fmt.Fprintln(out, l); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -804,8 +807,10 @@ func runVersionsOut(ctx context.Context, client storage.Client, u *uri.URI, out 
 		if v.IsDeleteMarker {
 			marker = "DELETE_MARKER"
 		}
-		fmt.Fprintf(out, "%s\t%s\t%d\t%s\t%s\n",
-			v.VersionID, v.LastModified.UTC().Format(time.RFC3339), v.Size, latest, marker)
+		if _, err := fmt.Fprintf(out, "%s\t%s\t%d\t%s\t%s\n",
+			v.VersionID, v.LastModified.UTC().Format(time.RFC3339), v.Size, latest, marker); err != nil {
+			return err
+		}
 	}
 	return nil
 }
