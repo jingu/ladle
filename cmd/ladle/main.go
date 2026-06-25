@@ -288,8 +288,8 @@ func runFileEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flag
 	defer editor.Cleanup(tmpPath)
 
 	// Check for changes
-	diffText := diff.Generate(original, modified, "original", "modified")
-	if diffText == "" {
+	diffText, tooLarge := diff.Generate(original, modified, "original", "modified")
+	if diffText == "" && !tooLarge {
 		msg := "No changes detected. Skipping upload."
 		fmt.Fprintln(os.Stderr, msg)
 		return msg, nil
@@ -297,7 +297,11 @@ func runFileEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flag
 
 	// Show diff
 	fmt.Fprintf(os.Stderr, "\nFile: %s\n\n", u)
-	diff.Print(os.Stderr, diffText)
+	if tooLarge {
+		fmt.Fprintln(os.Stderr, "File is too large to display a diff; skipping diff.")
+	} else {
+		diff.Print(os.Stderr, diffText)
+	}
 
 	if f.dryRun {
 		msg := "(dry-run: upload skipped)"
@@ -379,8 +383,8 @@ func runMetaEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flag
 	defer editor.Cleanup(tmpPath)
 
 	// Check for changes
-	diffText := diff.Generate(originalStr, modifiedStr, "original", "modified")
-	if diffText == "" {
+	diffText, tooLarge := diff.Generate(originalStr, modifiedStr, "original", "modified")
+	if diffText == "" && !tooLarge {
 		msg := "No changes detected. Skipping update."
 		fmt.Fprintln(os.Stderr, msg)
 		return msg, nil
@@ -388,7 +392,11 @@ func runMetaEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flag
 
 	// Show diff
 	fmt.Fprintf(os.Stderr, "\nMetadata: %s\n\n", u)
-	diff.Print(os.Stderr, diffText)
+	if tooLarge {
+		fmt.Fprintln(os.Stderr, "Content is too large to display a diff; skipping diff.")
+	} else {
+		diff.Print(os.Stderr, diffText)
+	}
 
 	if f.dryRun {
 		msg := "(dry-run: update skipped)"
@@ -477,8 +485,8 @@ func runRestoreVersion(ctx context.Context, client storage.Client, u *uri.URI, v
 
 	if !isBinary {
 		// Check for differences
-		diffText := diff.Generate(current, selected, "current", "version "+versionID)
-		if diffText == "" {
+		diffText, tooLarge := diff.Generate(current, selected, "current", "version "+versionID)
+		if diffText == "" && !tooLarge {
 			msg := "No differences between current and selected version."
 			fmt.Fprintln(os.Stderr, msg)
 			return msg, nil
@@ -486,7 +494,11 @@ func runRestoreVersion(ctx context.Context, client storage.Client, u *uri.URI, v
 
 		// Show diff
 		fmt.Fprintf(os.Stderr, "\nFile: %s\n\n", u)
-		diff.Print(os.Stderr, diffText)
+		if tooLarge {
+			fmt.Fprintln(os.Stderr, "File is too large to display a diff; skipping diff.")
+		} else {
+			diff.Print(os.Stderr, diffText)
+		}
 	}
 
 	// Confirm
@@ -596,15 +608,19 @@ func runPipeIn(ctx context.Context, client storage.Client, u *uri.URI, f *flags,
 	}
 
 	// Check for changes
-	diffText := diff.Generate(original, modified, "remote", "stdin")
-	if diffText == "" {
+	diffText, tooLarge := diff.Generate(original, modified, "remote", "stdin")
+	if diffText == "" && !tooLarge {
 		fmt.Fprintln(os.Stderr, "No changes detected. Skipping upload.")
 		return nil
 	}
 
 	// Show diff
 	fmt.Fprintf(os.Stderr, "\nFile: %s\n\n", u)
-	diff.Print(os.Stderr, diffText)
+	if tooLarge {
+		fmt.Fprintln(os.Stderr, "File is too large to display a diff; skipping diff.")
+	} else {
+		diff.Print(os.Stderr, diffText)
+	}
 
 	if f.dryRun {
 		fmt.Fprintln(os.Stderr, "\n(dry-run: upload skipped)")
@@ -693,15 +709,19 @@ func runMetaPipeIn(ctx context.Context, client storage.Client, u *uri.URI, f *fl
 	}
 
 	// Check for changes
-	diffText := diff.Generate(string(originalYAML), string(newYAML), "remote", "stdin")
-	if diffText == "" {
+	diffText, tooLarge := diff.Generate(string(originalYAML), string(newYAML), "remote", "stdin")
+	if diffText == "" && !tooLarge {
 		fmt.Fprintln(os.Stderr, "No changes detected. Skipping update.")
 		return nil
 	}
 
 	// Show diff
 	fmt.Fprintf(os.Stderr, "\nMetadata: %s\n\n", u)
-	diff.Print(os.Stderr, diffText)
+	if tooLarge {
+		fmt.Fprintln(os.Stderr, "Content is too large to display a diff; skipping diff.")
+	} else {
+		diff.Print(os.Stderr, diffText)
+	}
 
 	if f.dryRun {
 		fmt.Fprintln(os.Stderr, "\n(dry-run: update skipped)")
