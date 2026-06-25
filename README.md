@@ -12,10 +12,11 @@
 
 [日本語](README.ja.md)
 
-**Edit S3 and Azure Blob Storage files directly from your terminal. One command.**
+**Edit S3, Google Cloud Storage, and Azure Blob Storage files directly from your terminal. One command.**
 
 ```bash
 ladle s3://mybucket/config.json
+ladle gs://mybucket/config.json
 ladle az://mycontainer/config.json
 ```
 
@@ -178,12 +179,12 @@ Press `→` on a file to open the context menu:
 | Download to... | Download to a local directory (tab completion supported) |
 | Copy to... | Copy to another key in the same bucket |
 | Move to... | Move to another key in the same bucket |
-| Versions | View version history and restore a previous version (S3 / Azure Blob versioning) |
+| Versions | View version history and restore a previous version (S3 / GCS / Azure Blob versioning) |
 | Delete | Delete the object (with confirmation) |
 
 ### Version history
 
-View and restore previous versions of objects (requires versioning enabled — S3 bucket versioning or Azure Blob versioning).
+View and restore previous versions of objects (requires versioning enabled — S3 bucket versioning, GCS object versioning, or Azure Blob versioning).
 
 ```bash
 # Open version history directly
@@ -246,6 +247,32 @@ ladle --endpoint-url http://localhost:9000 s3://bucket/file.html   # MinIO
 ladle --no-sign-request s3://public-bucket/file.html
 ```
 
+## Google Cloud Storage
+
+ladle supports Google Cloud Storage via the `gs://` scheme:
+
+```bash
+ladle gs://bucket/path/to/file.html
+ladle gs://bucket/path/to/                     # file browser mode
+ladle --project myproject gs://                # list buckets
+```
+
+Credentials are resolved via [Application Default Credentials (ADC)](https://cloud.google.com/docs/authentication/application-default-credentials):
+
+1. `GOOGLE_APPLICATION_CREDENTIALS` pointing at a service account key file
+2. `gcloud auth application-default login`
+3. the attached service account when running on GCP (GCE, Cloud Run, GKE, etc.)
+
+```bash
+gcloud auth application-default login
+ladle gs://bucket/file.html
+```
+
+Listing buckets (`ladle gs://`) requires a project ID, set via `--project` or the
+`GOOGLE_CLOUD_PROJECT` environment variable. Use `--no-sign-request` for public
+buckets, and `--endpoint-url` (or `STORAGE_EMULATOR_HOST`) to target the
+fake-gcs-server emulator.
+
 ## Azure Blob Storage
 
 ladle supports Azure Blob Storage via the `az://` scheme, where the container
@@ -278,7 +305,7 @@ Use `--endpoint-url` to target the Azurite emulator.
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--meta` | | Edit object metadata instead of file content |
-| `--versions` | | Show version history for a file (S3 / Azure Blob versioning) |
+| `--versions` | | Show version history for a file (S3 / GCS / Azure Blob versioning) |
 | `--editor` | | Editor command (overrides env vars) |
 | `--yes` | `-y` | Skip confirmation prompt |
 | `--dry-run` | | Show diff without uploading |
@@ -286,7 +313,8 @@ Use `--endpoint-url` to target the Azurite emulator.
 | `--profile` | | AWS named profile |
 | `--region` | | AWS region |
 | `--account` | | Azure storage account name (or `AZURE_STORAGE_ACCOUNT`) |
-| `--endpoint-url` | | Custom endpoint URL (MinIO, LocalStack, Azurite, etc.) |
+| `--project` | | GCP project ID for bucket listing (or `GOOGLE_CLOUD_PROJECT`) |
+| `--endpoint-url` | | Custom endpoint URL (MinIO, LocalStack, Azurite, fake-gcs-server, etc.) |
 | `--no-sign-request` | | Do not sign requests |
 | `--install-completion` | | Generate shell completion script (bash\|zsh\|fish) |
 
@@ -315,7 +343,7 @@ ladle --install-completion fish > ~/.config/fish/completions/ladle.fish
 
 ## Future Plans
 
-- GCS (`gs://`), Cloudflare R2 (`r2://`) backends
+- Cloudflare R2 (`r2://`) backend
 - Multi-file batch editing
 - `ladle compare` for diffing two remote files
 

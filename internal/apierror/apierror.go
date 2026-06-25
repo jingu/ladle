@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"strings"
 
+	"cloud.google.com/go/storage"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/aws/smithy-go"
+	"google.golang.org/api/googleapi"
 )
 
 // Kind represents the category of an API error.
@@ -94,6 +96,19 @@ func inspect(err error) (Kind, string, string) {
 				code = fmt.Sprintf("HTTP %d", azErr.StatusCode)
 			}
 			return kind, code, err.Error()
+		}
+	}
+
+	// Check GCS sentinel errors, which the SDK returns instead of a googleapi.Error.
+	if errors.Is(err, storage.ErrObjectNotExist) || errors.Is(err, storage.ErrBucketNotExist) {
+		return KindNotFound, "NotFound", err.Error()
+	}
+
+	// Check Google API errors (GCS). The Code field is the HTTP status code.
+	var gErr *googleapi.Error
+	if errors.As(err, &gErr) {
+		if kind := classifyHTTPStatus(gErr.Code); kind != KindUnknown {
+			return kind, fmt.Sprintf("HTTP %d", gErr.Code), err.Error()
 		}
 	}
 
@@ -207,7 +222,7 @@ func isNetworkError(err error) bool {
 func hintFor(kind Kind) string {
 	switch kind {
 	case KindAuth:
-		return "Check your credentials. For AWS, run 'aws configure' or verify AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (or try --profile). For Azure, run 'az login' or verify AZURE_STORAGE_* environment variables."
+		return "Check your credentials. For AWS, run 'aws configure' or verify AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (or try --profile). For GCS, run 'gcloud auth application-default login' or set GOOGLE_APPLICATION_CREDENTIALS. For Azure, run 'az login' or verify AZURE_STORAGE_* environment variables."
 	case KindPermission:
 		return "You don't have permission for this operation. Check the IAM policy attached to your credentials, or verify the bucket policy allows access."
 	case KindNotFound:

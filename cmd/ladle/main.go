@@ -24,6 +24,7 @@ import (
 	"github.com/jingu/ladle/internal/spinner"
 	"github.com/jingu/ladle/internal/storage"
 	"github.com/jingu/ladle/internal/storage/azblobclient"
+	"github.com/jingu/ladle/internal/storage/gcsclient"
 	"github.com/jingu/ladle/internal/storage/s3client"
 	"github.com/jingu/ladle/internal/uri"
 	"github.com/spf13/cobra"
@@ -47,6 +48,7 @@ type flags struct {
 	profile        string
 	region         string
 	account        string
+	project        string
 	endpointURL    string
 	noSignRequest  bool
 	yes            bool
@@ -77,7 +79,7 @@ func newRootCmd() *cobra.Command {
 Edit cloud storage files directly from your terminal.
 Download, edit in your favorite editor, diff, confirm, upload — all in one shot.
 
-Supported backends: AWS S3 (s3://) and Azure Blob Storage (az://).
+Supported backends: AWS S3 (s3://), Google Cloud Storage (gs://), and Azure Blob Storage (az://).
 
 Examples:
   ladle s3://bucket/path/to/file.html
@@ -90,6 +92,11 @@ Examples:
   ladle --meta s3://bucket/path/to/file.html > meta.yaml  # export metadata
   ladle --meta s3://bucket/path/to/file.html < meta.yaml  # import metadata
   ladle --versions s3://bucket/path/to/file.html          # version history
+
+Google Cloud Storage (uses Application Default Credentials):
+  ladle gs://bucket/path/to/file.html     # with gcloud auth application-default login
+  ladle gs://bucket/path/to/              # file browser mode
+  ladle --project myproject gs://         # bucket list browser
 
 Azure Blob Storage (container = bucket, blob = key):
   ladle --account myaccount az://container/path/to/file.html
@@ -110,7 +117,8 @@ Azure Blob Storage (container = bucket, blob = key):
 	cmd.Flags().StringVar(&f.profile, "profile", "", "AWS named profile")
 	cmd.Flags().StringVar(&f.region, "region", "", "AWS region")
 	cmd.Flags().StringVar(&f.account, "account", "", "Azure storage account name (or AZURE_STORAGE_ACCOUNT)")
-	cmd.Flags().StringVar(&f.endpointURL, "endpoint-url", "", "Custom endpoint URL (e.g. for MinIO or Azurite)")
+	cmd.Flags().StringVar(&f.project, "project", "", "GCP project ID for bucket listing (or GOOGLE_CLOUD_PROJECT)")
+	cmd.Flags().StringVar(&f.endpointURL, "endpoint-url", "", "Custom endpoint URL (e.g. for MinIO, Azurite, or fake-gcs-server)")
 	cmd.Flags().BoolVar(&f.noSignRequest, "no-sign-request", false, "Do not sign requests")
 	cmd.Flags().BoolVarP(&f.yes, "yes", "y", false, "Skip confirmation prompt")
 	cmd.Flags().BoolVar(&f.force, "force", false, "Force editing of binary files")
@@ -235,6 +243,12 @@ func newClient(ctx context.Context, u *uri.URI, f *flags) (storage.Client, error
 		return azblobclient.New(ctx, azblobclient.Options{
 			Account:     f.account,
 			EndpointURL: f.endpointURL,
+		})
+	case uri.SchemeGCS:
+		return gcsclient.New(ctx, gcsclient.Options{
+			Project:       f.project,
+			EndpointURL:   f.endpointURL,
+			NoSignRequest: f.noSignRequest,
 		})
 	default:
 		return nil, fmt.Errorf("scheme %q is not yet supported (coming soon)", u.Scheme)
@@ -755,7 +769,7 @@ func runMetaPipeIn(ctx context.Context, client storage.Client, u *uri.URI, f *fl
 const bucketCacheTTL = 5 * time.Minute
 
 func handleCompleteBucket(ctx context.Context, client storage.Client, u *uri.URI, f *flags) error {
-	key := bucketCacheKey(u.Scheme, f.profile, f.account, f.endpointURL)
+	key := bucketCacheKey(u.Scheme, f.profile, f.account, f.project, f.endpointURL)
 	buckets, err := loadBucketCache(key)
 	if err != nil {
 		buckets, err = client.ListBuckets(ctx)
@@ -779,13 +793,16 @@ func handleCompleteBucket(ctx context.Context, client storage.Client, u *uri.URI
 // no-sign-request are intentionally omitted: ListBuckets returns the account's
 // buckets regardless of region, and anonymous listing does not produce a
 // distinct usable result.
-func bucketCacheKey(scheme uri.Scheme, profile, account, endpoint string) string {
+func bucketCacheKey(scheme uri.Scheme, profile, account, project, endpoint string) string {
 	key := string(scheme)
 	if profile != "" {
 		key += "_" + profile
 	}
 	if account != "" {
 		key += "_" + account
+	}
+	if project != "" {
+		key += "_" + project
 	}
 	if endpoint != "" {
 		key += "_" + endpoint

@@ -12,10 +12,11 @@
 
 [English](README.md)
 
-**S3 と Azure Blob Storage 上のファイルをターミナルから直接編集。コマンド一発。**
+**S3 / Google Cloud Storage / Azure Blob Storage 上のファイルをターミナルから直接編集。コマンド一発。**
 
 ```bash
 ladle s3://mybucket/config.json
+ladle gs://mybucket/config.json
 ladle az://mycontainer/config.json
 ```
 
@@ -178,12 +179,12 @@ $ ladle s3://myapp/
 | Download to... | ローカルディレクトリにダウンロード（タブ補完対応） |
 | Copy to... | 同一バケット内の別キーにコピー |
 | Move to... | 同一バケット内の別キーに移動 |
-| Versions | バージョン履歴を表示し、過去のバージョンに復元（S3 / Azure Blob バージョニング） |
+| Versions | バージョン履歴を表示し、過去のバージョンに復元（S3 / GCS / Azure Blob バージョニング） |
 | Delete | オブジェクトを削除（確認あり） |
 
 ### バージョン履歴
 
-オブジェクトの過去のバージョンを表示・復元できます（バージョニングが有効である必要があります — S3 のバケットバージョニング、または Azure Blob バージョニング）。
+オブジェクトの過去のバージョンを表示・復元できます（バージョニングが有効である必要があります — S3 のバケットバージョニング、GCS のオブジェクトバージョニング、または Azure Blob バージョニング）。
 
 ```bash
 # バージョン履歴を直接表示
@@ -246,6 +247,31 @@ ladle --endpoint-url http://localhost:9000 s3://bucket/file.html   # MinIO
 ladle --no-sign-request s3://public-bucket/file.html
 ```
 
+## Google Cloud Storage
+
+`gs://` スキームで Google Cloud Storage に対応しています:
+
+```bash
+ladle gs://bucket/path/to/file.html
+ladle gs://bucket/path/to/                     # ファイルブラウザモード
+ladle --project myproject gs://                # バケット一覧
+```
+
+認証情報は [Application Default Credentials (ADC)](https://cloud.google.com/docs/authentication/application-default-credentials) で解決されます:
+
+1. サービスアカウントキーファイルを指す `GOOGLE_APPLICATION_CREDENTIALS`
+2. `gcloud auth application-default login`
+3. GCP 上で実行している場合のアタッチされたサービスアカウント（GCE, Cloud Run, GKE など）
+
+```bash
+gcloud auth application-default login
+ladle gs://bucket/file.html
+```
+
+バケット一覧（`ladle gs://`）にはプロジェクトIDが必要で、`--project` または
+`GOOGLE_CLOUD_PROJECT` 環境変数で指定します。公開バケットには `--no-sign-request`、
+fake-gcs-server エミュレータには `--endpoint-url`（または `STORAGE_EMULATOR_HOST`）を使います。
+
 ## Azure Blob Storage
 
 `az://` スキームで Azure Blob Storage に対応しています。コンテナがバケットに、Blob がキーに対応します:
@@ -277,7 +303,7 @@ Azurite エミュレータを使う場合は `--endpoint-url` を指定します
 | フラグ | 短縮 | 説明 |
 |--------|------|------|
 | `--meta` | | ファイル本体ではなくメタデータを編集 |
-| `--versions` | | ファイルのバージョン履歴を表示（S3 / Azure Blob バージョニング） |
+| `--versions` | | ファイルのバージョン履歴を表示（S3 / GCS / Azure Blob バージョニング） |
 | `--editor` | | エディタコマンドを指定（環境変数より優先） |
 | `--yes` | `-y` | 確認プロンプトをスキップ |
 | `--dry-run` | | アップロードせずにdiffのみ表示 |
@@ -285,7 +311,8 @@ Azurite エミュレータを使う場合は `--endpoint-url` を指定します
 | `--profile` | | AWS named profile |
 | `--region` | | AWSリージョン |
 | `--account` | | Azure ストレージアカウント名（または `AZURE_STORAGE_ACCOUNT`） |
-| `--endpoint-url` | | カスタムエンドポイントURL（MinIO, LocalStack, Azurite等） |
+| `--project` | | バケット一覧用の GCP プロジェクトID（または `GOOGLE_CLOUD_PROJECT`） |
+| `--endpoint-url` | | カスタムエンドポイントURL（MinIO, LocalStack, Azurite, fake-gcs-server等） |
 | `--no-sign-request` | | 署名なしリクエスト |
 | `--install-completion` | | シェル補完スクリプトを生成 (bash\|zsh\|fish) |
 
@@ -314,7 +341,7 @@ ladle --install-completion fish > ~/.config/fish/completions/ladle.fish
 
 ## 今後の予定
 
-- GCS (`gs://`), Cloudflare R2 (`r2://`) バックエンド
+- Cloudflare R2 (`r2://`) バックエンド
 - 複数ファイルの一括編集
 - `ladle compare` による2ファイルのリモートdiff
 

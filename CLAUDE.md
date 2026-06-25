@@ -45,6 +45,7 @@ All storage operations go through `internal/storage.Client` interface. This is t
 | `internal/uri` | Parse cloud storage URIs (s3://, gs://, az://, r2://) |
 | `internal/storage` | `Client` interface definition + `MockClient` for tests |
 | `internal/storage/s3client` | AWS S3 implementation using aws-sdk-go-v2 |
+| `internal/storage/gcsclient` | Google Cloud Storage implementation using cloud.google.com/go/storage (ADC auth; `--project` for bucket listing) |
 | `internal/storage/azblobclient` | Azure Blob Storage implementation using azure-sdk-for-go (container=bucket, blob=key) |
 | `internal/editor` | Editor resolution, temp file management, binary detection |
 | `internal/diff` | LCS-based unified diff generation, colored terminal output |
@@ -100,6 +101,7 @@ Key design notes:
 ## Dependencies
 
 - `github.com/aws/aws-sdk-go-v2` — AWS S3 SDK
+- `cloud.google.com/go/storage` — Google Cloud Storage SDK (+ `google.golang.org/api/googleapi` for error classification)
 - `github.com/Azure/azure-sdk-for-go/sdk/storage/azblob` — Azure Blob Storage SDK (+ `azidentity` for Azure AD, `azcore` for error classification)
 - `github.com/charmbracelet/bubbletea` — TUI framework (Elm architecture)
 - `github.com/charmbracelet/lipgloss` — Terminal styling

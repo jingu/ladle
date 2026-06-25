@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Google Cloud Storage backend via the `gs://` scheme, using Application Default Credentials.
+- `--project` flag (with `GOOGLE_CLOUD_PROJECT` fallback) for GCS bucket listing.
+- GCS error classification, including the `ErrObjectNotExist` / `ErrBucketNotExist` sentinels
+  and `googleapi.Error` HTTP status codes, in the friendly API error output.
+- `gs://` URI completion in the bash/zsh/fish shell completion scripts.
 - Azure Blob Storage backend via the `az://` scheme, mapping container→bucket and blob→key.
 - Azure credential resolution chain: `AZURE_STORAGE_CONNECTION_STRING`, account key
   (`AZURE_STORAGE_KEY`), SAS token (`AZURE_STORAGE_SAS_TOKEN`), and Azure AD
@@ -20,9 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Minimum Go version is now **1.25** (required by the Azure SDK and its `golang.org/x/*`
   dependencies). CI now tests Go 1.25 and 1.26.
-- Shell completion URI handling is now scheme-generic (`s3://` and `az://`) and forwards
-  `--account`; the bucket-name cache is namespaced by scheme to avoid cross-provider collisions.
-- The auth error hint now covers both AWS and Azure credentials.
+- Shell completion URI handling is now scheme-generic (`s3://`, `gs://`, and `az://`) and
+  forwards `--account` / `--project`; the bucket-name cache is namespaced by scheme, account,
+  and project to avoid cross-provider collisions.
+- The auth error hint now covers AWS, GCS, and Azure credentials.
 
 ## [1.4.0] - 2026-02-27
 
