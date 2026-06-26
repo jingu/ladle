@@ -112,7 +112,17 @@ ladle --meta s3://myapp/index.html < meta.yaml
 
 # 変換して再アップロード
 ladle s3://myapp/config.json | jq '.debug = true' | ladle --yes s3://myapp/config.json
+
+# オブジェクト/バケットを一覧（1行1URI、ディレクトリは末尾 / 付き）。
+# stdout を非TTY にするためリダイレクトかパイプを使う（端末のままだと TUI ブラウザが開く）。
+ladle s3://myapp/config/ > objects.txt   # config/ 配下のオブジェクトとサブディレクトリ
+ladle s3:// | grep myapp                  # 全バケットを s3://<bucket>/ として
+
+# オブジェクトのバージョン履歴を一覧（タブ区切り: id, 更新日時, サイズ, latest, delete-marker）
+ladle --versions s3://myapp/config.json > versions.tsv
 ```
+
+stdout がリダイレクトされている場合、ディレクトリ URI（やスキーマのみ）は一覧を、`--versions` はバージョン履歴を出力します（対話 TUI は開きません）。
 
 stdin がリダイレクトされている場合、確認プロンプトは `/dev/tty` から読み取ります。非インタラクティブ環境では `--yes` を使用してください。オブジェクトが存在しない場合は新規作成されます。
 
@@ -337,6 +347,24 @@ ladle --install-completion zsh >> ~/.zshrc
 
 # fish
 ladle --install-completion fish > ~/.config/fish/completions/ladle.fish
+```
+
+## Agent Skill
+
+ladle には、AI コーディングエージェントに ladle でのクラウドストレージ操作（読み取り・編集・メタデータ確認）の使い方を教える [Agent Skill](https://docs.claude.com/en/docs/claude-code/skills) が同梱されています。エージェントが非対話で扱えるよう、パイプモードを前提とした内容です。
+
+```bash
+# Claude Code 向けにインストール（ユーザーグローバル: ~/.claude/skills/ladle/SKILL.md）
+ladle skill install
+
+# カレントプロジェクトにインストール（.claude/skills/ladle/SKILL.md）
+ladle skill install --project
+
+# 既存のインストールを上書き
+ladle skill install --force
+
+# スキルを標準出力に表示
+ladle skill show
 ```
 
 ## 今後の予定

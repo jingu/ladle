@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/jingu/ladle/internal/diff"
 	"github.com/jingu/ladle/internal/editor"
 	"github.com/jingu/ladle/internal/meta"
+	"github.com/jingu/ladle/internal/skill"
 	"github.com/jingu/ladle/internal/spinner"
 	"github.com/jingu/ladle/internal/storage"
 	"github.com/jingu/ladle/internal/storage/azblobclient"
@@ -129,7 +131,71 @@ Azure Blob Storage (container = bucket, blob = key):
 	_ = cmd.Flags().MarkHidden("complete-bucket")
 	_ = cmd.Flags().MarkHidden("complete-path")
 
+	cmd.AddCommand(newSkillCmd())
+
 	return cmd
+}
+
+func newSkillCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "skill",
+		Short: "Manage the ladle Agent Skill for AI coding agents",
+		Long: `Manage the ladle Agent Skill, which teaches AI coding agents how to read,
+edit, and inspect cloud storage objects with ladle.`,
+	}
+	cmd.AddCommand(newSkillInstallCmd())
+	cmd.AddCommand(newSkillShowCmd())
+	return cmd
+}
+
+func newSkillInstallCmd() *cobra.Command {
+	var agentName string
+	var project bool
+	var force bool
+
+	cmd := &cobra.Command{
+		Use:   "install",
+		Short: "Install the ladle skill for an AI coding agent",
+		Long: `Install the ladle Agent Skill so an AI coding agent can use ladle.
+
+By default the skill is installed for Claude Code into the user's home directory
+(~/.claude/skills/ladle/SKILL.md). Use --project to install it into the current
+project (.claude/skills/ladle/SKILL.md) instead.
+
+Examples:
+  ladle skill install
+  ladle skill install --project
+  ladle skill install --force`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			scope := skill.ScopeUser
+			if project {
+				scope = skill.ScopeProject
+			}
+			dest, err := skill.Install(skill.Agent(agentName), scope, force)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(os.Stderr, "✓ Installed ladle skill to %s\n", dest)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&agentName, "agent", string(skill.AgentClaude), "Target agent (claude)")
+	cmd.Flags().BoolVar(&project, "project", false, "Install into the current project (.claude/) instead of the user home directory")
+	cmd.Flags().BoolVar(&force, "force", false, "Overwrite an existing skill file")
+	return cmd
+}
+
+func newSkillShowCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "show",
+		Short: "Print the ladle skill (SKILL.md) to stdout",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, err := fmt.Fprint(os.Stdout, skill.Markdown())
+			return err
+		},
+	}
 }
 
 func run(cmd *cobra.Command, args []string, f *flags) error {
@@ -163,10 +229,22 @@ func run(cmd *cobra.Command, args []string, f *flags) error {
 		return handleCompletePath(ctx, client, u)
 	}
 
+	// Detect pipe/redirect early: listings and version history print to stdout
+	// when stdout is not a terminal, instead of opening the interactive TUI.
+	// These are read-only and never consume stdin, so they run regardless of
+	// stdin's state. The stdin+stdout both-redirected guard below only applies to
+	// content/metadata read-or-write, where redirecting both makes the intended
+	// mode (download vs upload) ambiguous.
+	stdoutPiped := !isTerminal(os.Stdout)
+	stdinPiped := !isTerminal(os.Stdin)
+
 	// --versions: show version history directly
 	if f.versions {
 		if u.IsDirectory() {
 			return fmt.Errorf("--versions requires a file URI (not a directory)")
+		}
+		if stdoutPiped {
+			return runVersionsOut(ctx, client, u, os.Stdout)
 		}
 		versionsKey := u.Key
 		// Adjust URI to parent directory for browser, then open versions view
@@ -181,8 +259,11 @@ func run(cmd *cobra.Command, args []string, f *flags) error {
 		return runBrowser(ctx, client, dirURI, f, browser.WithVersionsKey(versionsKey))
 	}
 
-	// Directory => browser mode
+	// Directory => listing (piped) or browser mode
 	if u.IsDirectory() {
+		if stdoutPiped {
+			return runListOut(ctx, client, u, os.Stdout)
+		}
 		return runBrowser(ctx, client, u, f)
 	}
 
@@ -190,19 +271,20 @@ func run(cmd *cobra.Command, args []string, f *flags) error {
 	if u.Key != "" {
 		entries, err := client.List(ctx, u.Bucket, u.Key+"/", "/")
 		if err == nil && len(entries) > 0 {
-			// It's a directory prefix — redirect to browser mode
+			// It's a directory prefix — list (piped) or open the browser
 			dirURI, err := uri.Parse(fmt.Sprintf("%s://%s/%s/", u.Scheme, u.Bucket, u.Key))
 			if err != nil {
 				return err
+			}
+			if stdoutPiped {
+				return runListOut(ctx, client, dirURI, os.Stdout)
 			}
 			return runBrowser(ctx, client, dirURI, f)
 		}
 	}
 
-	// Check for pipe/redirect
-	stdoutPiped := !isTerminal(os.Stdout)
-	stdinPiped := !isTerminal(os.Stdin)
-
+	// From here on we operate on a single object's content/metadata. Redirecting
+	// both stdin and stdout makes the intent (download vs upload) ambiguous.
 	if stdoutPiped && stdinPiped {
 		return fmt.Errorf("both stdin and stdout are redirected; this is not supported")
 	}
@@ -672,6 +754,70 @@ func runPipeIn(ctx context.Context, client storage.Client, u *uri.URI, f *flags,
 		return err
 	}
 	sp.StopWithMessage(fmt.Sprintf("✓ Uploaded to %s", u))
+	return nil
+}
+
+// runListOut writes a directory or bucket listing to out, one URI per line.
+// Directory entries keep their trailing "/" so the output can be fed back to
+// ladle for recursive listing. This is the non-interactive counterpart to the
+// TUI browser, used when stdout is not a terminal.
+func runListOut(ctx context.Context, client storage.Client, u *uri.URI, out io.Writer) error {
+	if u.IsBucketList() {
+		buckets, err := client.ListBuckets(ctx)
+		if err != nil {
+			return err
+		}
+		lines := make([]string, 0, len(buckets))
+		for _, b := range buckets {
+			lines = append(lines, fmt.Sprintf("%s://%s/", u.Scheme, b))
+		}
+		return writeLines(out, lines)
+	}
+
+	entries, err := client.List(ctx, u.Bucket, u.Key, "/")
+	if err != nil {
+		return err
+	}
+	lines := make([]string, 0, len(entries))
+	for _, e := range entries {
+		lines = append(lines, fmt.Sprintf("%s://%s/%s", u.Scheme, u.Bucket, e.Key))
+	}
+	return writeLines(out, lines)
+}
+
+// writeLines sorts lines and writes each on its own line to out.
+func writeLines(out io.Writer, lines []string) error {
+	sort.Strings(lines)
+	for _, l := range lines {
+		if _, err := fmt.Fprintln(out, l); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// runVersionsOut writes an object's version history to out, one version per
+// line as tab-separated fields: versionID, last-modified (RFC3339 UTC), size,
+// LATEST/-, DELETE_MARKER/-. Order is newest-first, as returned by the backend.
+func runVersionsOut(ctx context.Context, client storage.Client, u *uri.URI, out io.Writer) error {
+	versions, err := client.ListVersions(ctx, u.Bucket, u.Key)
+	if err != nil {
+		return err
+	}
+	for _, v := range versions {
+		latest := "-"
+		if v.IsLatest {
+			latest = "LATEST"
+		}
+		marker := "-"
+		if v.IsDeleteMarker {
+			marker = "DELETE_MARKER"
+		}
+		if _, err := fmt.Fprintf(out, "%s\t%s\t%d\t%s\t%s\n",
+			v.VersionID, v.LastModified.UTC().Format(time.RFC3339), v.Size, latest, marker); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
