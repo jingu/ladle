@@ -13,7 +13,6 @@ package ssm
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -33,11 +32,6 @@ type Parameter struct {
 	Metadata     Metadata
 }
 
-// IsSecure reports whether the parameter is a SecureString.
-func (p *Parameter) IsSecure() bool {
-	return p.Type == string(types.ParameterTypeSecureString)
-}
-
 // Metadata holds the editable attributes of a parameter (used by --meta).
 type Metadata struct {
 	Type        string // String | StringList | SecureString
@@ -45,6 +39,11 @@ type Metadata struct {
 	KeyID       string // KMS key id/alias for SecureString
 	Description string
 	DataType    string // text | aws:ec2:image | aws:ssm:integration
+}
+
+// IsSecure reports whether the parameter is a SecureString.
+func (m Metadata) IsSecure() bool {
+	return m.Type == string(types.ParameterTypeSecureString)
 }
 
 // HistoryEntry is one version in a parameter's history.
@@ -74,8 +73,6 @@ type Client interface {
 	// Get retrieves a parameter. When decrypt is true and the parameter is a
 	// SecureString, the plaintext value is returned (requires kms:Decrypt).
 	Get(ctx context.Context, name string, decrypt bool) (*Parameter, error)
-	// GetVersion retrieves a specific version of a parameter.
-	GetVersion(ctx context.Context, name string, version int64, decrypt bool) (*Parameter, error)
 	// Describe returns a parameter's metadata without its value.
 	Describe(ctx context.Context, name string) (*Metadata, error)
 	// Put creates or overwrites a parameter.
@@ -124,42 +121,40 @@ func (c *awsClient) Get(ctx context.Context, name string, decrypt bool) (*Parame
 	return paramFromSDK(out.Parameter), nil
 }
 
-func (c *awsClient) GetVersion(ctx context.Context, name string, version int64, decrypt bool) (*Parameter, error) {
-	// SSM addresses a specific version via the "name:version" selector.
-	selector := name + ":" + strconv.FormatInt(version, 10)
-	out, err := c.client.GetParameter(ctx, &ssm.GetParameterInput{
-		Name:           aws.String(selector),
-		WithDecryption: aws.Bool(decrypt),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("getting parameter %s version %d: %w", name, version, err)
-	}
-	p := paramFromSDK(out.Parameter)
-	p.Name = name // strip the ":version" selector from the reported name
-	return p, nil
-}
-
 func (c *awsClient) Describe(ctx context.Context, name string) (*Metadata, error) {
-	out, err := c.client.DescribeParameters(ctx, &ssm.DescribeParametersInput{
-		ParameterFilters: []types.ParameterStringFilter{{
-			Key:    aws.String("Name"),
-			Option: aws.String("Equals"),
-			Values: []string{name},
-		}},
+	// Read metadata via GetParameterHistory rather than DescribeParameters:
+	// GetParameterHistory can be scoped to the parameter's ARN in IAM and is
+	// strongly consistent, whereas DescribeParameters requires the account-wide
+	// ssm:DescribeParameters permission and is eventually consistent (a
+	// just-written parameter may not appear yet).
+	paginator := ssm.NewGetParameterHistoryPaginator(c.client, &ssm.GetParameterHistoryInput{
+		Name:           aws.String(name),
+		WithDecryption: aws.Bool(false),
 	})
-	if err != nil {
-		return nil, fmt.Errorf("describing parameter %s: %w", name, err)
+	var latest *types.ParameterHistory
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			if IsNotFound(err) {
+				return nil, &NotFoundError{Name: name}
+			}
+			return nil, fmt.Errorf("describing parameter %s: %w", name, err)
+		}
+		for i := range page.Parameters {
+			if latest == nil || page.Parameters[i].Version > latest.Version {
+				latest = &page.Parameters[i]
+			}
+		}
 	}
-	if len(out.Parameters) == 0 {
+	if latest == nil {
 		return nil, &NotFoundError{Name: name}
 	}
-	m := out.Parameters[0]
 	return &Metadata{
-		Type:        string(m.Type),
-		Tier:        string(m.Tier),
-		KeyID:       aws.ToString(m.KeyId),
-		Description: aws.ToString(m.Description),
-		DataType:    aws.ToString(m.DataType),
+		Type:        string(latest.Type),
+		Tier:        string(latest.Tier),
+		KeyID:       aws.ToString(latest.KeyId),
+		Description: aws.ToString(latest.Description),
+		DataType:    aws.ToString(latest.DataType),
 	}, nil
 }
 
@@ -170,7 +165,10 @@ func (c *awsClient) Put(ctx context.Context, in PutInput) error {
 		Type:      types.ParameterType(in.Meta.Type),
 		Overwrite: aws.Bool(true),
 	}
-	if in.Meta.KeyID != "" {
+	// KeyId is only valid for SecureString; sending it with any other type
+	// makes PutParameter fail (e.g. after a SecureString->String type change
+	// that left a stale keyId in the edited metadata).
+	if in.Meta.KeyID != "" && in.Meta.IsSecure() {
 		input.KeyId = aws.String(in.Meta.KeyID)
 	}
 	if in.Meta.Tier != "" {

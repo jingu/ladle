@@ -76,6 +76,9 @@ func TestIsBucketList(t *testing.T) {
 		{"s3", true},
 		{"s3://mybucket", false},
 		{"s3://mybucket/key", false},
+		// SSM has no bucket concept — never a bucket-list URI.
+		{"ssm://", false},
+		{"ssm:///myapp/db", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {

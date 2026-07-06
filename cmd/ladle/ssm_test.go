@@ -54,3 +54,30 @@ func TestResolveForEditSecureStringGate(t *testing.T) {
 		}
 	})
 }
+
+func TestNewParamType(t *testing.T) {
+	tests := []struct {
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{"", "String", false},
+		{"String", "String", false},
+		{"StringList", "StringList", false},
+		{"SecureString", "SecureString", false},
+		{"securestring", "", true}, // AWS types are case-sensitive
+		{"Secret", "", true},
+	}
+	for _, tt := range tests {
+		got, err := newParamType(tt.in)
+		if tt.wantErr {
+			if err == nil {
+				t.Errorf("newParamType(%q): expected error", tt.in)
+			}
+			continue
+		}
+		if err != nil || got != tt.want {
+			t.Errorf("newParamType(%q) = %q, %v; want %q", tt.in, got, err, tt.want)
+		}
+	}
+}

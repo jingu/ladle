@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"sort"
 	"strings"
 	"time"
@@ -35,9 +36,10 @@ func runSSM(ctx context.Context, u *uri.URI, f *flags) error {
 
 	stdoutPiped := !isTerminal(os.Stdout)
 	stdinPiped := !isTerminal(os.Stdin)
-	if stdoutPiped && stdinPiped {
-		return fmt.Errorf("both stdin and stdout are redirected; this is not supported")
-	}
+
+	// --versions and listings are read-only and never consume stdin, so they
+	// run regardless of stdin's state (the both-redirect guard below only
+	// applies to single-parameter read/write).
 
 	// --versions: print history (no TUI for ssm)
 	if f.versions {
@@ -47,9 +49,24 @@ func runSSM(ctx context.Context, u *uri.URI, f *flags) error {
 		return runSSMVersions(ctx, client, name)
 	}
 
-	// Directory/path => listing (printed to stdout; ssm has no TUI browser)
+	// Explicit path => listing (printed to stdout; ssm has no TUI browser)
 	if u.IsDirectory() {
 		return runSSMList(ctx, client, name, f)
+	}
+
+	// A name that is actually a namespace prefix (children exist but it is not
+	// itself a parameter) lists its children, mirroring the S3 prefix redirect.
+	// Skipped when stdin is piped, where the intent is to create that name.
+	if !stdinPiped {
+		if entries, err := client.List(ctx, name+"/", false); err == nil && len(entries) > 0 {
+			return runSSMList(ctx, client, name+"/", f)
+		}
+	}
+
+	// From here we read or write a single parameter's value/metadata;
+	// redirecting both stdin and stdout makes the intent ambiguous.
+	if stdoutPiped && stdinPiped {
+		return fmt.Errorf("both stdin and stdout are redirected; this is not supported")
 	}
 
 	if stdoutPiped {
@@ -84,7 +101,7 @@ func resolveForEdit(ctx context.Context, client ssm.Client, name string, reveal 
 		}
 		return nil, "", err
 	}
-	secure := md.Type == "SecureString"
+	secure := md.IsSecure()
 	if secure && !reveal {
 		return nil, "", fmt.Errorf("%s is a SecureString; re-run with --reveal to decrypt and edit", ssmDisplay(name))
 	}
@@ -107,7 +124,7 @@ func runSSMEdit(ctx context.Context, client ssm.Client, name string, f *flags) (
 	}
 	sp.StopWithMessage(fmt.Sprintf("✓ Fetched %s", display))
 
-	filename := name[strings.LastIndexByte(name, '/')+1:]
+	filename := path.Base(name)
 	tmpPath, err := editor.TempFile(filename, []byte(original))
 	if err != nil {
 		return "", err
@@ -164,7 +181,7 @@ func runSSMPipeOut(ctx context.Context, client ssm.Client, name string, f *flags
 	if err != nil {
 		return err
 	}
-	secure := md.Type == "SecureString"
+	secure := md.IsSecure()
 	if secure && !f.reveal {
 		return fmt.Errorf("%s is a SecureString; re-run with --reveal to output the decrypted value", display)
 	}
@@ -186,8 +203,7 @@ func runSSMPipeIn(ctx context.Context, client ssm.Client, name string, f *flags)
 	}
 	modified := string(data)
 
-	// Metadata (no value) is always safe to fetch and gives us the Type to
-	// preserve on write.
+	// Metadata (no value) is safe to fetch and gives us the Type to preserve.
 	md, err := client.Describe(ctx, name)
 	newParam := false
 	if err != nil {
@@ -195,26 +211,39 @@ func runSSMPipeIn(ctx context.Context, client ssm.Client, name string, f *flags)
 			return err
 		}
 		newParam = true
-		md = &ssm.Metadata{Type: "String"}
-		fmt.Fprintf(os.Stderr, "Parameter %s does not exist — will create as String.\n", display)
+		ptype, err := newParamType(f.paramType)
+		if err != nil {
+			return err
+		}
+		md = &ssm.Metadata{Type: ptype}
+		fmt.Fprintf(os.Stderr, "Parameter %s does not exist — will create as %s.\n", display, ptype)
+	} else if f.paramType != "" && !strings.EqualFold(f.paramType, md.Type) {
+		fmt.Fprintf(os.Stderr, "Note: --type applies only when creating; %s already exists as %s.\n", display, md.Type)
 	}
 
-	// Diff requires the current value. Skip it entirely with --yes so that
-	// non-interactive writes (incl. SecureString) don't need --reveal.
-	if !f.yes {
-		var original string
-		if !newParam {
-			secure := md.Type == "SecureString"
-			if secure && !f.reveal {
-				return fmt.Errorf("%s is a SecureString; re-run with --reveal to review the diff, or --yes to update without one", display)
-			}
-			param, err := client.Get(ctx, name, secure)
-			if err != nil {
-				return err
-			}
-			original = param.Value
+	// Fetch the current value for a diff when we can. For an existing
+	// SecureString this needs --reveal; without it we can still update under
+	// --yes (no diff), but not review interactively.
+	var original string
+	haveOriginal := true
+	switch {
+	case newParam:
+		// nothing to diff against
+	case md.IsSecure() && !f.reveal:
+		haveOriginal = false
+		if !f.yes {
+			return fmt.Errorf("%s is a SecureString; re-run with --reveal to review the diff, or --yes to update without one", display)
 		}
+	default:
+		param, err := client.Get(ctx, name, md.IsSecure())
+		if err != nil {
+			return err
+		}
+		original = param.Value
+	}
 
+	// No-op detection runs whenever the current value is known, even with --yes.
+	if haveOriginal {
 		diffText, tooLarge := diff.Generate(original, modified, "remote", "stdin")
 		if diffText == "" && !tooLarge {
 			fmt.Fprintln(os.Stderr, "No changes detected. Skipping update.")
@@ -226,12 +255,14 @@ func runSSMPipeIn(ctx context.Context, client ssm.Client, name string, f *flags)
 		} else {
 			diff.Print(os.Stderr, diffText)
 		}
+	}
 
-		if f.dryRun {
-			fmt.Fprintln(os.Stderr, "\n(dry-run: update skipped)")
-			return nil
-		}
+	if f.dryRun {
+		fmt.Fprintln(os.Stderr, "\n(dry-run: update skipped)")
+		return nil
+	}
 
+	if !f.yes {
 		tty, err := os.Open("/dev/tty")
 		if err != nil {
 			return fmt.Errorf("cannot open terminal for confirmation (use --yes to skip): %w", err)
@@ -241,17 +272,27 @@ func runSSMPipeIn(ctx context.Context, client ssm.Client, name string, f *flags)
 			fmt.Fprintln(os.Stderr, "Update cancelled.")
 			return nil
 		}
-	} else if f.dryRun {
-		fmt.Fprintln(os.Stderr, "(dry-run: update skipped)")
-		return nil
 	}
 
 	_, err = ssmPut(ctx, client, name, modified, md)
 	return err
 }
 
-func runSSMList(ctx context.Context, client ssm.Client, path string, f *flags) error {
-	entries, err := client.List(ctx, path, f.recursive)
+// newParamType validates the --type flag for a to-be-created parameter,
+// defaulting to String when unset.
+func newParamType(flagVal string) (string, error) {
+	switch flagVal {
+	case "":
+		return "String", nil
+	case "String", "StringList", "SecureString":
+		return flagVal, nil
+	default:
+		return "", fmt.Errorf("invalid --type %q (want String, StringList, or SecureString)", flagVal)
+	}
+}
+
+func runSSMList(ctx context.Context, client ssm.Client, listPath string, f *flags) error {
+	entries, err := client.List(ctx, listPath, f.recursive)
 	if err != nil {
 		return err
 	}
@@ -389,16 +430,20 @@ func runSSMMetaPipeIn(ctx context.Context, client ssm.Client, name string, f *fl
 		return err
 	}
 
+	// Detect a no-op by comparing parsed metadata, not the raw stdin bytes
+	// against canonical YAML — the "# uri" comment and field ordering would
+	// otherwise make semantically-identical input look like a change.
+	if *newMeta == *md {
+		fmt.Fprintln(os.Stderr, "No changes detected. Skipping update.")
+		return nil
+	}
+
 	originalYAML, err := ssm.MarshalMeta(display, md)
 	if err != nil {
 		return err
 	}
 
 	diffText, tooLarge := diff.Generate(string(originalYAML), string(newYAML), "remote", "stdin")
-	if diffText == "" && !tooLarge {
-		fmt.Fprintln(os.Stderr, "No changes detected. Skipping update.")
-		return nil
-	}
 	fmt.Fprintf(os.Stderr, "\nMetadata: %s\n\n", display)
 	if tooLarge {
 		fmt.Fprintln(os.Stderr, "Metadata is too large to display a diff; skipping diff.")

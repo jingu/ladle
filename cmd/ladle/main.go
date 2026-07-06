@@ -58,6 +58,7 @@ type flags struct {
 	dryRun         bool
 	reveal         bool
 	recursive      bool
+	paramType      string
 	installComp    string
 	completeBucket bool
 	completePath   bool
@@ -133,6 +134,7 @@ AWS SSM Parameter Store (ssm:// — no bucket; path is the parameter name):
 	cmd.Flags().BoolVar(&f.dryRun, "dry-run", false, "Show diff without uploading")
 	cmd.Flags().BoolVar(&f.reveal, "reveal", false, "Decrypt and expose SecureString values (ssm://)")
 	cmd.Flags().BoolVar(&f.recursive, "recursive", false, "List parameters recursively (ssm://)")
+	cmd.Flags().StringVar(&f.paramType, "type", "", "Parameter type when creating a new ssm:// parameter (String|StringList|SecureString)")
 	cmd.Flags().StringVar(&f.installComp, "install-completion", "", "Generate completion script (bash|zsh|fish)")
 	cmd.Flags().BoolVar(&f.completeBucket, "complete-bucket", false, "Internal: complete bucket names")
 	cmd.Flags().BoolVar(&f.completePath, "complete-path", false, "Internal: complete object paths")

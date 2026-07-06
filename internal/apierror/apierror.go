@@ -170,7 +170,10 @@ func classifyAPICode(code string) Kind {
 		"404",
 		// Azure
 		"BlobNotFound",
-		"ContainerNotFound":
+		"ContainerNotFound",
+		// SSM Parameter Store
+		"ParameterNotFound",
+		"ParameterVersionNotFound":
 		return KindNotFound
 
 	// Throttling
@@ -224,9 +227,9 @@ func hintFor(kind Kind) string {
 	case KindAuth:
 		return "Check your credentials. For AWS, run 'aws configure' or verify AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (or try --profile). For GCS, run 'gcloud auth application-default login' or set GOOGLE_APPLICATION_CREDENTIALS. For Azure, run 'az login' or verify AZURE_STORAGE_* environment variables."
 	case KindPermission:
-		return "You don't have permission for this operation. Check the IAM policy attached to your credentials, or verify the bucket policy allows access."
+		return "You don't have permission for this operation. Check the IAM policy attached to your credentials, or the resource policy for the target (bucket/container/parameter)."
 	case KindNotFound:
-		return "The specified bucket or object was not found. Check the URI for typos, and verify the --region flag if the bucket is in a different region."
+		return "The specified resource was not found. Check the URI for typos, and verify the --region flag if it lives in a different region."
 	case KindThrottle:
 		return "Request was throttled by the service. Please wait a moment and try again."
 	case KindServer:

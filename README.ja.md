@@ -242,6 +242,9 @@ ladle ssm:///myapp/prod/db-url
 ladle ssm:///myapp/prod/db-url > value.txt          # 値を標準出力へ
 echo -n 'postgres://new/db' | ladle --yes ssm:///myapp/prod/db-url
 
+# 新規パラメータの作成（既定は String、他の型は --type で指定）
+echo -n 's3cret' | ladle --yes --type SecureString ssm:///myapp/prod/api-token
+
 # パス一覧（ディレクトリは末尾 / 付き）。--recursive で全階層
 ladle ssm:///myapp/prod/
 ladle ssm:///myapp/ --recursive
@@ -265,10 +268,13 @@ ladle --reveal ssm:///myapp/prod/db-password > secret # 復号して標準出力
 補足:
 - 書き込み時、元の KMS キー（`keyId`）などの属性は保持されます。
 - SecureString のメタデータ編集はパラメータの再書き込みを伴う（SSM にメタデータ専用 API がない）ため、`--meta` でも `--reveal` が必要です。
-- `--yes` の非対話書き込みは diff を省くため `--reveal` は不要です（例: `echo -n "$SECRET" | ladle --yes ssm:///myapp/prod/db-password`）。
+- SecureString の値更新は、`--yes` で（平文の）diff を省けば `--reveal` なしでも可能です（例: `echo -n "$SECRET" | ladle --yes ssm:///myapp/prod/db-password`）。
+- **新規**パラメータへの pipe-in は、`--type`（`String` | `StringList` | `SecureString`）を指定しない限り `String` で作成します（秘密の平文保存を防止）。
 - 一時ファイルは専用ディレクトリに `0600` で作成し、終了時に削除します。
 
-`ssm://` に TUI ブラウザはありません。ディレクトリ URI は一覧を標準出力に表示します。
+**必要な IAM アクション**（いずれもパラメータ ARN にスコープ可能）: `ssm:GetParameter`、`ssm:GetParameterHistory`（メタデータ取得に使用）、`ssm:PutParameter`。SecureString は加えて鍵への `kms:Decrypt`/`kms:Encrypt`。
+
+`ssm://` に TUI ブラウザはありません。ディレクトリ URI は一覧を標準出力に表示します。末尾スラッシュの無い名前空間（子はあるがそれ自体はパラメータでない）も一覧を表示するため、スラッシュを付け忘れても動作します。
 
 ## インストール
 
@@ -360,6 +366,7 @@ Azurite エミュレータを使う場合は `--endpoint-url` を指定します
 | `--force` | | バイナリファイルでも強制的に編集 |
 | `--reveal` | | SecureString の値を復号して露出（`ssm://`） |
 | `--recursive` | | パラメータを再帰的に一覧（`ssm://`） |
+| `--type` | | 新規 `ssm://` パラメータ作成時の型（String\|StringList\|SecureString） |
 | `--profile` | | AWS named profile |
 | `--region` | | AWSリージョン |
 | `--account` | | Azure ストレージアカウント名（または `AZURE_STORAGE_ACCOUNT`） |

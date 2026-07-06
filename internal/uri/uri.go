@@ -31,8 +31,9 @@ func (u *URI) IsDirectory() bool {
 }
 
 // IsBucketList returns true if the URI has no bucket (e.g. "s3://").
+// SSM has no bucket concept at all, so it is never a bucket-list URI.
 func (u *URI) IsBucketList() bool {
-	return u.Bucket == ""
+	return u.Scheme != SchemeSSM && u.Bucket == ""
 }
 
 // String returns the original URI string.

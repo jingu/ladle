@@ -245,6 +245,9 @@ ladle ssm:///myapp/prod/db-url
 ladle ssm:///myapp/prod/db-url > value.txt          # read value to stdout
 echo -n 'postgres://new/db' | ladle --yes ssm:///myapp/prod/db-url
 
+# Create a new parameter (defaults to String; use --type for others)
+echo -n 's3cret' | ladle --yes --type SecureString ssm:///myapp/prod/api-token
+
 # List a path (directories keep a trailing slash); --recursive for the whole tree
 ladle ssm:///myapp/prod/
 ladle ssm:///myapp/ --recursive
@@ -272,11 +275,21 @@ Notes:
 - On write, the original KMS key (`keyId`) and other attributes are preserved.
 - Editing a SecureString's metadata re-writes the parameter (SSM has no
   metadata-only API), so `--meta` on a SecureString also needs `--reveal`.
-- Non-interactive writes with `--yes` skip the diff and don't need `--reveal`
+- A SecureString value can still be updated non-interactively without `--reveal`
+  by using `--yes`, which skips the (plaintext) diff
   (e.g. `echo -n "$SECRET" | ladle --yes ssm:///myapp/prod/db-password`).
+- Piping into a **new** parameter creates a `String` unless you pass `--type`
+  (`String` | `StringList` | `SecureString`), so secrets aren't stored in
+  cleartext by accident.
 - Temp files are created `0600` in a private directory and removed on exit.
 
+**Required IAM actions** (all can be scoped to the parameter ARN):
+`ssm:GetParameter`, `ssm:GetParameterHistory` (used for metadata), and
+`ssm:PutParameter`; plus `kms:Decrypt`/`kms:Encrypt` on the key for SecureString.
+
 There is no TUI browser for `ssm://`; directory URIs print a listing to stdout.
+A name that is actually a namespace (has children but is not itself a parameter)
+prints its listing too, so a missing trailing slash still works.
 
 ## Installation
 
@@ -370,6 +383,7 @@ Use `--endpoint-url` to target the Azurite emulator.
 | `--force` | | Force editing of binary files |
 | `--reveal` | | Decrypt and expose SecureString values (`ssm://`) |
 | `--recursive` | | List parameters recursively (`ssm://`) |
+| `--type` | | Type when creating a new `ssm://` parameter (String\|StringList\|SecureString) |
 | `--profile` | | AWS named profile |
 | `--region` | | AWS region |
 | `--account` | | Azure storage account name (or `AZURE_STORAGE_ACCOUNT`) |
