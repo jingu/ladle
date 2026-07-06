@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path"
-	"sort"
 	"strings"
 	"time"
 
@@ -302,12 +301,11 @@ func runSSMList(ctx context.Context, client ssm.Client, listPath string, f *flag
 	if err != nil {
 		return err
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
-	w := os.Stdout
+	lines := make([]string, 0, len(entries))
 	for _, e := range entries {
-		fmt.Fprintln(w, ssmDisplay(e.Name))
+		lines = append(lines, ssmDisplay(e.Name))
 	}
-	return nil
+	return writeLines(os.Stdout, lines)
 }
 
 func runSSMVersions(ctx context.Context, client ssm.Client, name string) error {
@@ -321,13 +319,15 @@ func runSSMVersions(ctx context.Context, client ssm.Client, name string) error {
 		if i == 0 {
 			latest = "LATEST"
 		}
-		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\n",
+		if _, err := fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\n",
 			h.Version,
 			h.LastModified.UTC().Format(time.RFC3339),
 			h.Type,
 			h.ModifiedUser,
 			latest,
-		)
+		); err != nil {
+			return err
+		}
 	}
 	return nil
 }
