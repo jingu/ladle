@@ -61,23 +61,25 @@ func (a *ssmStorageAdapter) DownloadVersion(ctx context.Context, _ string, key, 
 	})
 }
 
-// writeValue fetches a parameter (first without decryption to learn its type)
-// and writes its value, masking SecureString content unless reveal is set.
+// writeValue fetches a parameter and writes its value, masking SecureString
+// content unless reveal is set. With reveal it decrypts directly; without it,
+// it fetches undecrypted (so SecureString ciphertext is never even retrieved as
+// plaintext) and writes a placeholder for secure values.
 func (a *ssmStorageAdapter) writeValue(_ context.Context, w io.Writer, get func(decrypt bool) (*ssm.Parameter, error)) error {
+	if a.reveal {
+		p, err := get(true)
+		if err != nil {
+			return err
+		}
+		_, err = io.WriteString(w, p.Value)
+		return err
+	}
 	p, err := get(false)
 	if err != nil {
 		return err
 	}
-	if !p.Metadata.IsSecure() {
-		_, err = io.WriteString(w, p.Value)
-		return err
-	}
-	if !a.reveal {
+	if p.Metadata.IsSecure() {
 		_, err = io.WriteString(w, secureMask)
-		return err
-	}
-	p, err = get(true)
-	if err != nil {
 		return err
 	}
 	_, err = io.WriteString(w, p.Value)
@@ -117,18 +119,26 @@ func (a *ssmStorageAdapter) Delete(ctx context.Context, _ string, key string) er
 }
 
 func (a *ssmStorageAdapter) Copy(ctx context.Context, _ string, srcKey, dstKey string) error {
-	src := toName(srcKey)
+	src, dst := toName(srcKey), toName(dstKey)
+	// Guard against a destination that only differs by slash normalization: a
+	// self-copy here would let a subsequent Move delete the (only) parameter.
+	if src == dst {
+		return fmt.Errorf("source and destination are the same parameter (%s)", src)
+	}
 	md, err := a.client.Describe(ctx, src)
 	if err != nil {
 		return err
 	}
-	// Copy preserves the value, which requires decrypting a SecureString; the
-	// plaintext is never shown to the user, only re-written to the new name.
+	// Copying a SecureString requires decrypting it to re-write under the new
+	// name; keep the same --reveal gate the rest of the tool uses for secrets.
+	if md.IsSecure() && !a.reveal {
+		return fmt.Errorf("%s is a SecureString; re-run with --reveal to copy or move it", src)
+	}
 	p, err := a.client.Get(ctx, src, md.IsSecure())
 	if err != nil {
 		return err
 	}
-	return a.client.Put(ctx, ssm.PutInput{Name: toName(dstKey), Value: p.Value, Meta: *md})
+	return a.client.Put(ctx, ssm.PutInput{Name: dst, Value: p.Value, Meta: *md})
 }
 
 func (a *ssmStorageAdapter) Upload(ctx context.Context, _ string, key string, r io.Reader, _ *storage.ObjectMetadata) error {

@@ -76,15 +76,21 @@ func runSSM(ctx context.Context, u *uri.URI, f *flags) error {
 		return runSSMBrowser(ctx, client, u, f)
 	}
 
-	// A name that is actually a namespace prefix (children exist but it is not
-	// itself a parameter): list it, mirroring the S3 prefix redirect. Skipped
-	// when stdin is piped, where the intent is to create that name.
+	// A name that is NOT itself a parameter but has children is a namespace:
+	// list/browse it, mirroring the S3 prefix redirect. A real parameter (even
+	// one that also has children) is edited/read directly. Skipped when stdin
+	// is piped, where the intent is to create that name.
 	if !stdinPiped {
-		if entries, err := client.List(ctx, name+"/", false); err == nil && len(entries) > 0 {
-			if stdoutPiped {
-				return runSSMList(ctx, client, name+"/", f)
+		if _, derr := client.Describe(ctx, name); derr != nil {
+			if !ssm.IsNotFound(derr) {
+				return derr
 			}
-			return runSSMBrowser(ctx, client, ssmDirURI(name+"/"), f)
+			if entries, lerr := client.List(ctx, name+"/", false); lerr == nil && len(entries) > 0 {
+				if stdoutPiped {
+					return runSSMList(ctx, client, name+"/", f)
+				}
+				return runSSMBrowser(ctx, client, ssmDirURI(name+"/"), f)
+			}
 		}
 	}
 

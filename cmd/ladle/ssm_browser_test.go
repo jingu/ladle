@@ -95,3 +95,28 @@ func TestAdapterCopyPreservesTypeAndValue(t *testing.T) {
 		t.Errorf("copy lost value/type: %#v", cp)
 	}
 }
+
+func TestAdapterCopyRejectsSameNormalizedName(t *testing.T) {
+	ctx := context.Background()
+	a, c := newAdapterWith(true)
+
+	// Destination differs only by a leading slash — normalizes to the same SSM
+	// name. Must error so a following Move never deletes the source.
+	err := a.Copy(ctx, "", "myapp/db-url", "/myapp/db-url")
+	if err == nil {
+		t.Fatal("expected Copy to reject a same-normalized-name destination")
+	}
+	if _, ok := c.Params["/myapp/db-url"]; !ok {
+		t.Error("source parameter must still exist after a rejected copy")
+	}
+}
+
+func TestAdapterCopySecureRequiresReveal(t *testing.T) {
+	ctx := context.Background()
+	a, _ := newAdapterWith(false) // no --reveal
+
+	err := a.Copy(ctx, "", "myapp/db-password", "myapp/db-password-copy")
+	if err == nil || !strings.Contains(err.Error(), "--reveal") {
+		t.Fatalf("expected SecureString copy to require --reveal, got: %v", err)
+	}
+}
