@@ -31,22 +31,25 @@ The codebase follows Go standard layout with `cmd/` for binaries and `internal/`
 
 ### Key design decision: `storage.Client` interface
 
-All storage operations go through `internal/storage.Client` interface. This is the extension point for multi-cloud support. To add a new cloud backend:
+All object-storage operations go through `internal/storage.Client` interface. This is the extension point for multi-cloud object storage. To add a new cloud backend:
 
 1. Create `internal/storage/<provider>/` package implementing `storage.Client`
 2. Add a case to `newClient()` in `cmd/ladle/main.go`
 3. The URI scheme (e.g., `gs://`, `az://`) is already parsed by `internal/uri`
+
+**Non-object stores (SSM Parameter Store)** deliberately do NOT use `storage.Client` — it is bucket/object shaped (bucket key, `ObjectMetadata` with ContentType, `ListBuckets`/`Copy`) and Parameter Store has no bucket and different metadata. Instead, `ssm://` is dispatched by an early branch in `run()` (`if u.Scheme == uri.SchemeSSM { return runSSM(...) }`) to `cmd/ladle/ssm.go`, which reuses the lower-level helpers (`editor`, `diff`, `confirm`) but talks to the `internal/ssm.Client`.
 
 ### Package map
 
 | Package | Purpose |
 |---------|---------|
 | `cmd/ladle` | CLI entrypoint, cobra command setup, main workflow orchestration |
-| `internal/uri` | Parse cloud storage URIs (s3://, gs://, az://, r2://) |
+| `internal/uri` | Parse cloud storage URIs (s3://, gs://, az://, r2://, ssm://) |
 | `internal/storage` | `Client` interface definition + `MockClient` for tests |
 | `internal/storage/s3client` | AWS S3 implementation using aws-sdk-go-v2 |
 | `internal/storage/gcsclient` | Google Cloud Storage implementation using cloud.google.com/go/storage (ADC auth; `--project` for bucket listing) |
 | `internal/storage/azblobclient` | Azure Blob Storage implementation using azure-sdk-for-go (container=bucket, blob=key) |
+| `internal/ssm` | SSM Parameter Store client (Get/Put/List/History/Describe) + `FakeClient`. Not a `storage.Client`. |
 | `internal/editor` | Editor resolution, temp file management, binary detection |
 | `internal/diff` | LCS-based unified diff generation, colored terminal output |
 | `internal/meta` | Object metadata YAML marshal/unmarshal |
@@ -79,6 +82,8 @@ All storage operations go through `internal/storage.Client` interface. This is t
 
 Terminal detection uses `os.File.Stat()` with `ModeCharDevice` to distinguish pipe/redirect from interactive terminal. When stdin is piped, confirmation prompts read from `/dev/tty` instead (`--yes` to skip).
 
+**SSM Parameter Store** (`cmd/ladle/ssm.go`, `runSSM`): early-branch dispatcher for `ssm://`, mirroring the S3 flows (edit / pipe out / pipe in / list / versions / meta) against `internal/ssm.Client`. Differences from S3: no bucket (the URI's `Key` is the full parameter name, always leading-slash normalized); no TUI browser (directory URIs print a listing to stdout, sorted, one canonical `ssm://` URI per line); `--versions` prints tab-separated history to stdout. Because SSM has no metadata-only write API, `--meta` re-`Put`s the current value alongside the new attributes. **SecureString safety (`--reveal`):** value-exposing operations (edit, pipe-out, update diff) refuse for SecureString unless `--reveal` is passed; `--yes` writes skip the diff and don't need `--reveal`. On write the existing `keyId`/tier/description are preserved (fetched via `Describe`).
+
 ## Code Style
 
 - Go standard formatting (`gofmt`)
@@ -105,7 +110,7 @@ Key design notes:
 
 ## Dependencies
 
-- `github.com/aws/aws-sdk-go-v2` — AWS S3 SDK
+- `github.com/aws/aws-sdk-go-v2` — AWS SDK (S3 + SSM Parameter Store)
 - `cloud.google.com/go/storage` — Google Cloud Storage SDK (+ `google.golang.org/api/googleapi` for error classification)
 - `github.com/Azure/azure-sdk-for-go/sdk/storage/azblob` — Azure Blob Storage SDK (+ `azidentity` for Azure AD, `azcore` for error classification)
 - `github.com/charmbracelet/bubbletea` — TUI framework (Elm architecture)

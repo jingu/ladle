@@ -14,6 +14,7 @@ const (
 	SchemeGCS   Scheme = "gs"
 	SchemeAzure Scheme = "az"
 	SchemeR2    Scheme = "r2"
+	SchemeSSM   Scheme = "ssm"
 )
 
 // URI represents a parsed cloud storage URI.
@@ -46,23 +47,36 @@ func Parse(raw string) (*URI, error) {
 	if !strings.Contains(raw, "://") {
 		candidate := Scheme(raw)
 		switch candidate {
-		case SchemeS3, SchemeGCS, SchemeAzure, SchemeR2:
+		case SchemeS3, SchemeGCS, SchemeAzure, SchemeR2, SchemeSSM:
 			raw = raw + "://"
 		default:
-			return nil, fmt.Errorf("invalid URI %q: missing scheme (expected s3://, gs://, az://, r2://)", raw)
+			return nil, fmt.Errorf("invalid URI %q: missing scheme (expected s3://, gs://, az://, r2://, ssm://)", raw)
 		}
 	}
 
 	idx := strings.Index(raw, "://")
 	scheme := Scheme(raw[:idx])
 	switch scheme {
-	case SchemeS3, SchemeGCS, SchemeAzure, SchemeR2:
+	case SchemeS3, SchemeGCS, SchemeAzure, SchemeR2, SchemeSSM:
 		// OK
 	default:
-		return nil, fmt.Errorf("unsupported scheme %q: expected s3, gs, az, or r2", scheme)
+		return nil, fmt.Errorf("unsupported scheme %q: expected s3, gs, az, r2, or ssm", scheme)
 	}
 
 	rest := raw[idx+3:]
+
+	// SSM Parameter Store has no bucket. The whole path after the scheme is a
+	// parameter name, normalized to a single leading slash so that both
+	// "ssm://myapp/db" and "ssm:///myapp/db" resolve to "/myapp/db".
+	// A bare "ssm://" (or "ssm:///") normalizes to "/", the root listing.
+	if scheme == SchemeSSM {
+		return &URI{
+			Scheme: scheme,
+			Bucket: "",
+			Key:    "/" + strings.TrimLeft(rest, "/"),
+			Raw:    raw,
+		}, nil
+	}
 
 	var bucket, key string
 	if rest == "" {

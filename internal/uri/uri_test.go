@@ -29,6 +29,14 @@ func TestParse(t *testing.T) {
 		{"http://example.com", "", "", "", false, true},
 		{"s3://", SchemeS3, "", "", true, false},
 		{"s3:///path", "", "", "", false, true},
+		// SSM Parameter Store: no bucket, name normalized to a single leading slash
+		{"ssm:///myapp/db", SchemeSSM, "", "/myapp/db", false, false},
+		{"ssm://myapp/db", SchemeSSM, "", "/myapp/db", false, false},
+		{"ssm://///myapp/db", SchemeSSM, "", "/myapp/db", false, false},
+		{"ssm:///myapp/", SchemeSSM, "", "/myapp/", true, false},
+		{"ssm://", SchemeSSM, "", "/", true, false},
+		{"ssm:///", SchemeSSM, "", "/", true, false},
+		{"ssm", SchemeSSM, "", "/", true, false},
 	}
 
 	for _, tt := range tests {

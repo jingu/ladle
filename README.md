@@ -230,6 +230,54 @@ The version view shows a list of versions on the left with a content preview on 
 
 You can also access version history from the browser's context menu by selecting **Versions** on any file.
 
+## SSM Parameter Store
+
+`ssm://` edits **AWS Systems Manager Parameter Store** parameters with the same
+edit → diff → confirm flow. Parameter Store has no buckets: the whole path after
+the scheme is the parameter name, normalized to a single leading slash, so
+`ssm://myapp/db` and `ssm:///myapp/db` both mean `/myapp/db`.
+
+```bash
+# Edit a parameter value in your editor
+ladle ssm:///myapp/prod/db-url
+
+# Read / write via pipes (agent- and script-friendly)
+ladle ssm:///myapp/prod/db-url > value.txt          # read value to stdout
+echo -n 'postgres://new/db' | ladle --yes ssm:///myapp/prod/db-url
+
+# List a path (directories keep a trailing slash); --recursive for the whole tree
+ladle ssm:///myapp/prod/
+ladle ssm:///myapp/ --recursive
+
+# Version history (tab-separated: version, mtime, type, modified-by, LATEST)
+ladle --versions ssm:///myapp/prod/db-url
+
+# Parameter attributes as YAML (type, tier, keyId, description, dataType)
+ladle --meta ssm:///myapp/prod/db-password
+ladle --meta ssm:///myapp/prod/db-password > meta.yaml
+```
+
+### SecureString safety
+
+SecureString values are **never exposed by default**. Any operation that would
+reveal plaintext — editing, piping the value out, or diffing an update — refuses
+unless you pass `--reveal`:
+
+```bash
+ladle --reveal ssm:///myapp/prod/db-password          # decrypt and edit
+ladle --reveal ssm:///myapp/prod/db-password > secret # decrypt to stdout
+```
+
+Notes:
+- On write, the original KMS key (`keyId`) and other attributes are preserved.
+- Editing a SecureString's metadata re-writes the parameter (SSM has no
+  metadata-only API), so `--meta` on a SecureString also needs `--reveal`.
+- Non-interactive writes with `--yes` skip the diff and don't need `--reveal`
+  (e.g. `echo -n "$SECRET" | ladle --yes ssm:///myapp/prod/db-password`).
+- Temp files are created `0600` in a private directory and removed on exit.
+
+There is no TUI browser for `ssm://`; directory URIs print a listing to stdout.
+
 ## Installation
 
 ### Homebrew
@@ -320,6 +368,8 @@ Use `--endpoint-url` to target the Azurite emulator.
 | `--yes` | `-y` | Skip confirmation prompt |
 | `--dry-run` | | Show diff without uploading |
 | `--force` | | Force editing of binary files |
+| `--reveal` | | Decrypt and expose SecureString values (`ssm://`) |
+| `--recursive` | | List parameters recursively (`ssm://`) |
 | `--profile` | | AWS named profile |
 | `--region` | | AWS region |
 | `--account` | | Azure storage account name (or `AZURE_STORAGE_ACCOUNT`) |

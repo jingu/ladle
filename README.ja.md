@@ -230,6 +230,46 @@ ladle --versions s3://myapp/config.json
 
 ブラウザのコンテキストメニューから **Versions** を選択してアクセスすることもできます。
 
+## SSM パラメータストア
+
+`ssm://` は **AWS Systems Manager パラメータストア** のパラメータを、同じ「編集 → diff → 確認」フローで編集します。パラメータストアにバケットの概念はなく、スキーム以降のパス全体がパラメータ名です。先頭スラッシュ1個に正規化されるため、`ssm://myapp/db` と `ssm:///myapp/db` はどちらも `/myapp/db` を指します。
+
+```bash
+# パラメータ値をエディタで編集
+ladle ssm:///myapp/prod/db-url
+
+# パイプで読み書き（エージェント／スクリプト向け）
+ladle ssm:///myapp/prod/db-url > value.txt          # 値を標準出力へ
+echo -n 'postgres://new/db' | ladle --yes ssm:///myapp/prod/db-url
+
+# パス一覧（ディレクトリは末尾 / 付き）。--recursive で全階層
+ladle ssm:///myapp/prod/
+ladle ssm:///myapp/ --recursive
+
+# バージョン履歴（タブ区切り: version, 更新日時, type, 更新者, LATEST）
+ladle --versions ssm:///myapp/prod/db-url
+
+# パラメータ属性を YAML で（type, tier, keyId, description, dataType）
+ladle --meta ssm:///myapp/prod/db-password
+```
+
+### SecureString の安全策
+
+SecureString の値は**既定では一切露出しません**。平文を露出しうる操作（編集・値のパイプ出力・更新時の diff）は、`--reveal` を付けない限り拒否されます。
+
+```bash
+ladle --reveal ssm:///myapp/prod/db-password          # 復号して編集
+ladle --reveal ssm:///myapp/prod/db-password > secret # 復号して標準出力へ
+```
+
+補足:
+- 書き込み時、元の KMS キー（`keyId`）などの属性は保持されます。
+- SecureString のメタデータ編集はパラメータの再書き込みを伴う（SSM にメタデータ専用 API がない）ため、`--meta` でも `--reveal` が必要です。
+- `--yes` の非対話書き込みは diff を省くため `--reveal` は不要です（例: `echo -n "$SECRET" | ladle --yes ssm:///myapp/prod/db-password`）。
+- 一時ファイルは専用ディレクトリに `0600` で作成し、終了時に削除します。
+
+`ssm://` に TUI ブラウザはありません。ディレクトリ URI は一覧を標準出力に表示します。
+
 ## インストール
 
 ### Homebrew
@@ -318,6 +358,8 @@ Azurite エミュレータを使う場合は `--endpoint-url` を指定します
 | `--yes` | `-y` | 確認プロンプトをスキップ |
 | `--dry-run` | | アップロードせずにdiffのみ表示 |
 | `--force` | | バイナリファイルでも強制的に編集 |
+| `--reveal` | | SecureString の値を復号して露出（`ssm://`） |
+| `--recursive` | | パラメータを再帰的に一覧（`ssm://`） |
 | `--profile` | | AWS named profile |
 | `--region` | | AWSリージョン |
 | `--account` | | Azure ストレージアカウント名（または `AZURE_STORAGE_ACCOUNT`） |
