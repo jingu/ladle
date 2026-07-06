@@ -27,6 +27,12 @@ func ssmDisplay(name string) string {
 // --reveal is given; without it, value-exposing operations refuse rather than
 // print masked or ciphertext data.
 func runSSM(ctx context.Context, u *uri.URI, f *flags) error {
+	// Shell completion for ssm:// is not wired up; never perform a live read in
+	// response to the internal completion flags.
+	if f.completeBucket || f.completePath {
+		return nil
+	}
+
 	client, err := ssm.New(ctx, ssm.Options{Profile: f.profile, Region: f.region})
 	if err != nil {
 		return err
