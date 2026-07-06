@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jingu/ladle/internal/browser"
 	"github.com/jingu/ladle/internal/diff"
 	"github.com/jingu/ladle/internal/editor"
 	"github.com/jingu/ladle/internal/spinner"
@@ -20,6 +21,11 @@ import (
 // begins with "/"), e.g. "/myapp/db" -> "ssm:///myapp/db".
 func ssmDisplay(name string) string {
 	return "ssm://" + name
+}
+
+// ssmDirURI builds a directory URI for the browser from a leading-slash path.
+func ssmDirURI(dirPath string) *uri.URI {
+	return &uri.URI{Scheme: uri.SchemeSSM, Key: dirPath, Raw: ssmDisplay(dirPath)}
 }
 
 // runSSM dispatches an ssm:// URI. SecureString values are never exposed unless
@@ -46,25 +52,39 @@ func runSSM(ctx context.Context, u *uri.URI, f *flags) error {
 	// run regardless of stdin's state (the both-redirect guard below only
 	// applies to single-parameter read/write).
 
-	// --versions: print history (no TUI for ssm)
+	// --versions: history. Piped -> stdout table; interactive -> browser view.
 	if f.versions {
 		if u.IsDirectory() {
 			return fmt.Errorf("--versions requires a parameter name (not a path)")
 		}
-		return runSSMVersions(ctx, client, name)
+		if stdoutPiped {
+			return runSSMVersions(ctx, client, name)
+		}
+		parent := path.Dir(name)
+		if parent != "/" {
+			parent += "/"
+		}
+		dirURI := ssmDirURI(parent)
+		return runSSMBrowser(ctx, client, dirURI, f, browser.WithVersionsKey(strings.TrimPrefix(name, "/")))
 	}
 
-	// Explicit path => listing (printed to stdout; ssm has no TUI browser)
+	// Explicit path => listing. Piped -> stdout; interactive -> TUI browser.
 	if u.IsDirectory() {
-		return runSSMList(ctx, client, name, f)
+		if stdoutPiped {
+			return runSSMList(ctx, client, name, f)
+		}
+		return runSSMBrowser(ctx, client, u, f)
 	}
 
 	// A name that is actually a namespace prefix (children exist but it is not
-	// itself a parameter) lists its children, mirroring the S3 prefix redirect.
-	// Skipped when stdin is piped, where the intent is to create that name.
+	// itself a parameter): list it, mirroring the S3 prefix redirect. Skipped
+	// when stdin is piped, where the intent is to create that name.
 	if !stdinPiped {
 		if entries, err := client.List(ctx, name+"/", false); err == nil && len(entries) > 0 {
-			return runSSMList(ctx, client, name+"/", f)
+			if stdoutPiped {
+				return runSSMList(ctx, client, name+"/", f)
+			}
+			return runSSMBrowser(ctx, client, ssmDirURI(name+"/"), f)
 		}
 	}
 

@@ -287,9 +287,13 @@ Notes:
 `ssm:GetParameter`, `ssm:GetParameterHistory` (used for metadata), and
 `ssm:PutParameter`; plus `kms:Decrypt`/`kms:Encrypt` on the key for SecureString.
 
-There is no TUI browser for `ssm://`; directory URIs print a listing to stdout.
-A name that is actually a namespace (has children but is not itself a parameter)
-prints its listing too, so a missing trailing slash still works.
+Interactive directory URIs open the same TUI browser as S3 (tree navigation,
+`/` filter, and a context menu for edit / metadata / versions / download /
+copy / move / delete). A name that is actually a namespace (has children but is
+not itself a parameter) opens the browser too, so a missing trailing slash still
+works. When stdout is redirected/piped, a listing is printed instead. In the
+browser, SecureString values are masked in the version-preview pane unless
+`--reveal` is set.
 
 ## Installation
 

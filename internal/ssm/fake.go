@@ -46,6 +46,18 @@ func (f *FakeClient) Get(_ context.Context, name string, _ bool) (*Parameter, er
 	return &cp, nil
 }
 
+func (f *FakeClient) GetVersion(ctx context.Context, name string, _ int64, decrypt bool) (*Parameter, error) {
+	return f.Get(ctx, name, decrypt)
+}
+
+func (f *FakeClient) Delete(_ context.Context, name string) error {
+	if _, ok := f.Params[name]; !ok {
+		return &NotFoundError{Name: name}
+	}
+	delete(f.Params, name)
+	return nil
+}
+
 func (f *FakeClient) Describe(_ context.Context, name string) (*Metadata, error) {
 	p, ok := f.Params[name]
 	if !ok {

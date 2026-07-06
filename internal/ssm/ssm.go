@@ -13,6 +13,7 @@ package ssm
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -73,10 +74,14 @@ type Client interface {
 	// Get retrieves a parameter. When decrypt is true and the parameter is a
 	// SecureString, the plaintext value is returned (requires kms:Decrypt).
 	Get(ctx context.Context, name string, decrypt bool) (*Parameter, error)
+	// GetVersion retrieves a specific version of a parameter.
+	GetVersion(ctx context.Context, name string, version int64, decrypt bool) (*Parameter, error)
 	// Describe returns a parameter's metadata without its value.
 	Describe(ctx context.Context, name string) (*Metadata, error)
 	// Put creates or overwrites a parameter.
 	Put(ctx context.Context, in PutInput) error
+	// Delete removes a parameter.
+	Delete(ctx context.Context, name string) error
 	// List lists parameters under a path. With recursive=false only the
 	// immediate children are returned and deeper paths appear as directories.
 	List(ctx context.Context, path string, recursive bool) ([]ListEntry, error)
@@ -119,6 +124,30 @@ func (c *awsClient) Get(ctx context.Context, name string, decrypt bool) (*Parame
 		return nil, fmt.Errorf("getting parameter %s: %w", name, err)
 	}
 	return paramFromSDK(out.Parameter), nil
+}
+
+func (c *awsClient) GetVersion(ctx context.Context, name string, version int64, decrypt bool) (*Parameter, error) {
+	// SSM addresses a specific version via the "name:version" selector.
+	selector := name + ":" + strconv.FormatInt(version, 10)
+	out, err := c.client.GetParameter(ctx, &ssm.GetParameterInput{
+		Name:           aws.String(selector),
+		WithDecryption: aws.Bool(decrypt),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("getting parameter %s version %d: %w", name, version, err)
+	}
+	p := paramFromSDK(out.Parameter)
+	p.Name = name // strip the ":version" selector from the reported name
+	return p, nil
+}
+
+func (c *awsClient) Delete(ctx context.Context, name string) error {
+	if _, err := c.client.DeleteParameter(ctx, &ssm.DeleteParameterInput{
+		Name: aws.String(name),
+	}); err != nil {
+		return fmt.Errorf("deleting parameter %s: %w", name, err)
+	}
+	return nil
 }
 
 func (c *awsClient) Describe(ctx context.Context, name string) (*Metadata, error) {
