@@ -1,6 +1,6 @@
 ---
 name: ladle
-description: Read, edit, and inspect cloud storage objects (AWS S3 s3://, Google Cloud Storage gs://, Azure Blob az://) with the ladle CLI. Use when the user wants to view, download, replace, or edit the metadata of an object in a cloud bucket — especially non-interactively from an agent.
+description: Read, edit, and inspect cloud storage objects (AWS S3 s3://, Google Cloud Storage gs://, Azure Blob az://) and AWS SSM Parameter Store values (ssm://) with the ladle CLI. Use when the user wants to view, download, replace, or edit the metadata of an object in a cloud bucket, or to read/update a Systems Manager parameter or secret — especially non-interactively from an agent.
 ---
 
 # ladle — cloud storage object editing
@@ -11,6 +11,7 @@ shows a diff, and uploads it back. Supported backends:
 - AWS S3 — `s3://bucket/key`
 - Google Cloud Storage — `gs://bucket/key`
 - Azure Blob Storage — `az://container/blob`
+- AWS SSM Parameter Store — `ssm:///my/param` (no bucket; the path is the parameter name — see the SSM section below)
 
 ## Agent rule: always use pipe mode, never the interactive editor
 
@@ -121,6 +122,48 @@ cat meta.yaml | ladle --meta --yes s3://bucket/path/config.json       # after ap
 
 Edit the YAML between read and write — keep the same structure ladle emits.
 
+## AWS SSM Parameter Store (`ssm://`)
+
+`ssm://` reads and edits Systems Manager Parameter Store values with the **same
+pipe patterns** as objects. There is no bucket: everything after the scheme is
+the parameter name, normalized to a single leading slash, so `ssm://my/param`
+and `ssm:///my/param` mean the same parameter `/my/param`.
+
+```bash
+# Read a value (to stdout)
+ladle ssm:///myapp/prod/db-url
+
+# List a path (one level; trailing / kept on namespaces). --recursive for the whole tree
+ladle ssm:///myapp/prod/
+ladle ssm:///myapp/ --recursive
+
+# Version history (tab-separated: version, mtime RFC3339 UTC, type, last-modified-by, LATEST/-)
+ladle --versions ssm:///myapp/prod/db-url
+
+# Update a value (same confirm-first rule: --dry-run to preview, then --yes after approval)
+echo -n 'postgres://new/db' | ladle --dry-run ssm:///myapp/prod/db-url
+echo -n 'postgres://new/db' | ladle --yes    ssm:///myapp/prod/db-url
+
+# Create a NEW parameter (defaults to String; pass --type for others)
+echo -n 's3cret' | ladle --yes --type SecureString ssm:///myapp/prod/api-token
+
+# Parameter attributes as YAML (type, tier, keyId, description, dataType)
+ladle --meta ssm:///myapp/prod/db-password
+```
+
+**SecureString safety.** Encrypted (SecureString) values are **not exposed by
+default** — reading, editing, or diffing one refuses unless you pass `--reveal`.
+Only add `--reveal` when the user has asked you to view/handle that secret, and
+be careful: a revealed secret ends up in your output/context. A SecureString can
+still be *updated* non-interactively without `--reveal` via `--yes` (which skips
+the plaintext diff).
+
+Notes: the original KMS key and attributes are preserved on write; required IAM
+is `ssm:GetParameter`, `ssm:GetParameterHistory`, `ssm:PutParameter` (+ KMS for
+SecureString, `ssm:DeleteParameter` only for the interactive browser). Use
+`--profile` / `--region` as for S3. Restoring a version is interactive (TUI)
+only, like objects.
+
 ## Useful flags
 
 | Flag | Purpose |
@@ -128,16 +171,19 @@ Edit the YAML between read and write — keep the same structure ladle emits.
 | `--yes`, `-y` | Skip confirmation — use only after the user approves the write |
 | `--dry-run` | Show the diff but do not upload (use this to preview first) |
 | `--meta` | Operate on object metadata instead of content |
-| `--versions` | List an object's version history to stdout |
+| `--versions` | List an object's / parameter's version history to stdout |
 | `--force` | Allow editing/uploading binary content |
 | `--editor` | Editor command (interactive mode only — not for agents) |
+| `--reveal` | `ssm://` — decrypt and expose SecureString values (use only when the user asked) |
+| `--recursive` | `ssm://` — list parameters recursively |
+| `--type` | `ssm://` — type when creating a new parameter (String\|StringList\|SecureString) |
 
 ### Backend flags
 
 | Flag | Backend | Purpose |
 |------|---------|---------|
-| `--profile` | S3 | AWS named profile |
-| `--region` | S3 | AWS region |
+| `--profile` | S3, SSM | AWS named profile |
+| `--region` | S3, SSM | AWS region |
 | `--no-sign-request` | S3 | Unsigned (public) requests |
 | `--project` | GCS | GCP project ID (for bucket listing) |
 | `--account` | Azure | Storage account (or `AZURE_STORAGE_ACCOUNT`) |
