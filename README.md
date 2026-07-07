@@ -283,9 +283,11 @@ Notes:
   cleartext by accident.
 - Temp files are created `0600` in a private directory and removed on exit.
 
-**Required IAM actions** (all can be scoped to the parameter ARN):
-`ssm:GetParameter`, `ssm:GetParameterHistory` (used for metadata), and
-`ssm:PutParameter`; plus `kms:Decrypt`/`kms:Encrypt` on the key for SecureString.
+**Required IAM actions** (scopable to the parameter / path ARN):
+`ssm:GetParameter` (read), `ssm:GetParametersByPath` (list & browse),
+`ssm:GetParameterHistory` (metadata & `--versions`), `ssm:PutParameter` (write),
+and `ssm:DeleteParameter` (browser delete / move); plus `kms:Decrypt` /
+`kms:Encrypt` on the key for SecureString.
 
 Interactive directory URIs open the same TUI browser as S3 (tree navigation,
 `/` filter, and a context menu for edit / metadata / versions / download /

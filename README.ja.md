@@ -272,7 +272,7 @@ ladle --reveal ssm:///myapp/prod/db-password > secret # 復号して標準出力
 - **新規**パラメータへの pipe-in は、`--type`（`String` | `StringList` | `SecureString`）を指定しない限り `String` で作成します（秘密の平文保存を防止）。
 - 一時ファイルは専用ディレクトリに `0600` で作成し、終了時に削除します。
 
-**必要な IAM アクション**（いずれもパラメータ ARN にスコープ可能）: `ssm:GetParameter`、`ssm:GetParameterHistory`（メタデータ取得に使用）、`ssm:PutParameter`。SecureString は加えて鍵への `kms:Decrypt`/`kms:Encrypt`。
+**必要な IAM アクション**（パラメータ／パス ARN にスコープ可能）: `ssm:GetParameter`（読み取り）、`ssm:GetParametersByPath`（一覧・ブラウズ）、`ssm:GetParameterHistory`（メタデータ・`--versions`）、`ssm:PutParameter`（書き込み）、`ssm:DeleteParameter`（ブラウザの削除／移動）。SecureString は加えて鍵への `kms:Decrypt`/`kms:Encrypt`。
 
 対話実行時、ディレクトリ URI は S3 と同じ TUI ブラウザを開きます（ツリー移動・`/` フィルタ・編集/メタデータ/バージョン/ダウンロード/コピー/移動/削除のコンテキストメニュー）。末尾スラッシュの無い名前空間（子はあるがそれ自体はパラメータでない）もブラウザを開くため、スラッシュを付け忘れても動作します。stdout をリダイレクト/パイプした場合は一覧を出力します。ブラウザのバージョンプレビュー枠では、`--reveal` が無い限り SecureString の値はマスクされます。
 

@@ -159,8 +159,9 @@ still be *updated* non-interactively without `--reveal` via `--yes` (which skips
 the plaintext diff).
 
 Notes: the original KMS key and attributes are preserved on write; required IAM
-is `ssm:GetParameter`, `ssm:GetParameterHistory`, `ssm:PutParameter` (+ KMS for
-SecureString, `ssm:DeleteParameter` only for the interactive browser). Use
+is `ssm:GetParameter`, `ssm:GetParametersByPath` (list/browse),
+`ssm:GetParameterHistory`, `ssm:PutParameter` (+ KMS for SecureString,
+`ssm:DeleteParameter` only for the interactive browser). Use
 `--profile` / `--region` as for S3. Restoring a version is interactive (TUI)
 only, like objects.
 
