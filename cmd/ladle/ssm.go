@@ -161,7 +161,6 @@ func runSSMEdit(ctx context.Context, client ssm.Client, name string, f *flags) (
 		return "", err
 	}
 	fmt.Fprintf(os.Stderr, "Temp file: %s\n", tmpPath)
-	defer editor.Cleanup(tmpPath)
 
 	editorCmd := editor.ResolveEditor(f.editorCmd)
 	if err := editor.Open(editorCmd, tmpPath); err != nil {
@@ -174,6 +173,10 @@ func runSSMEdit(ctx context.Context, client ssm.Client, name string, f *flags) (
 		return "", fmt.Errorf("reading modified file: %w", err)
 	}
 	modified := string(modifiedBytes)
+
+	// Only remove the temp file once we have the edits in hand — an editor
+	// failure above leaves it in place for recovery.
+	defer editor.Cleanup(tmpPath)
 
 	diffText, tooLarge := diff.Generate(original, modified, "original", "modified")
 	if diffText == "" && !tooLarge {
@@ -396,7 +399,6 @@ func runSSMMetaEdit(ctx context.Context, client ssm.Client, name string, f *flag
 		return "", err
 	}
 	fmt.Fprintf(os.Stderr, "Temp file: %s\n", tmpPath)
-	defer editor.Cleanup(tmpPath)
 
 	editorCmd := editor.ResolveEditor(f.editorCmd)
 	if err := editor.Open(editorCmd, tmpPath); err != nil {
@@ -408,6 +410,10 @@ func runSSMMetaEdit(ctx context.Context, client ssm.Client, name string, f *flag
 	if err != nil {
 		return "", fmt.Errorf("reading modified file: %w", err)
 	}
+
+	// Only remove the temp file once we have the edits in hand — an editor
+	// failure above leaves it in place for recovery.
+	defer editor.Cleanup(tmpPath)
 
 	diffText, tooLarge := diff.Generate(string(originalYAML), string(modifiedBytes), "original", "modified")
 	if diffText == "" && !tooLarge {
