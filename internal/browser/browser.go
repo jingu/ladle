@@ -54,6 +54,13 @@ func New(client storage.Client, u *uri.URI, in io.Reader, out io.Writer, version
 	}
 }
 
+// SetBucketListEnabled controls whether an empty bucket means "list buckets"
+// (true, the default) or "list the root of a bucketless namespace" (false, used
+// by SSM Parameter Store, which has no bucket concept).
+func (b *Browser) SetBucketListEnabled(enabled bool) {
+	b.bucketListEnabled = enabled
+}
+
 // RunOption configures optional callbacks for the browser.
 type RunOption func(*runOptions)
 
@@ -132,7 +139,7 @@ func (b *Browser) buildView(ctx context.Context) ([]*node, string, bool, error) 
 // buildViewFor returns nodes, header, and canGoUp for the given bucket/prefix
 // without reading or modifying Browser fields. Safe to call from goroutines.
 func (b *Browser) buildViewFor(ctx context.Context, bucket, prefix string) ([]*node, string, bool, error) {
-	if bucket == "" {
+	if bucket == "" && b.bucketListEnabled {
 		// Bucket list mode
 		buckets, err := b.client.ListBuckets(ctx)
 		if err != nil {

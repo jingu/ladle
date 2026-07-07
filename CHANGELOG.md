@@ -21,6 +21,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Azure error classification (`BlobNotFound`, `AuthenticationFailed`, `AuthorizationFailure`,
   `ServerBusy`, etc.) in the friendly API error output.
 - `az://` URI completion in the bash/zsh/fish shell completion scripts.
+- AWS SSM Parameter Store backend via the `ssm://` scheme (no bucket; the whole path is the
+  parameter name, normalized to a single leading slash so `ssm://a/b` == `ssm:///a/b`). Supports
+  read/edit, pipe in/out, listing, `--versions` history, and `--meta` attributes (type, tier,
+  keyId, description, dataType).
+- `--reveal` flag: SecureString values are masked/refused by default (in reads, edits, diffs, and
+  the browser preview) and only exposed with `--reveal`.
+- `--type` flag for choosing the type when creating a new `ssm://` parameter (defaults to `String`
+  so secrets are not stored in cleartext by accident).
+- `--recursive` flag for listing an `ssm://` path's whole subtree.
+- TUI file browser support for `ssm://` (tree navigation, `/` filter, and the edit / metadata /
+  versions / download / copy / move / delete context menu), reusing the S3 browser via an adapter.
+- SSM error classification (`ParameterNotFound`) in the friendly API error output.
 
 ### Changed
 - Minimum Go version is now **1.25** (required by the Azure SDK and its `golang.org/x/*`
@@ -29,6 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   forwards `--account` / `--project`; the bucket-name cache is namespaced by scheme, account,
   and project to avoid cross-provider collisions.
 - The auth error hint now covers AWS, GCS, and Azure credentials.
+- The permission / not-found error hints are now resource-generic (bucket / container /
+  parameter) instead of S3-specific.
 
 ## [1.4.0] - 2026-02-27
 

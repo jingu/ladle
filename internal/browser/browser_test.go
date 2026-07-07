@@ -81,6 +81,42 @@ func TestNonExistentDirectoryError(t *testing.T) {
 	}
 }
 
+func TestBucketlessObjectListing(t *testing.T) {
+	// With bucketListEnabled=false, an empty bucket must list objects under the
+	// prefix (SSM-style), never fall into bucket-list mode / ListBuckets.
+	mock := storage.NewMockClient()
+	mock.PutObject("", "myapp/db-url", []byte("x"), nil)
+	mock.PutObject("", "myapp/prod/host", []byte("y"), nil)
+
+	b := &Browser{
+		client:            mock,
+		scheme:            uri.SchemeSSM,
+		bucket:            "",
+		prefix:            "myapp/",
+		bucketListEnabled: false,
+	}
+	nodes, _, canGoUp, err := b.buildViewFor(context.Background(), "", "myapp/")
+	if err != nil {
+		t.Fatalf("unexpected error (bucket-list mode leaked?): %v", err)
+	}
+	names := map[string]bool{}
+	for _, n := range nodes {
+		names[n.entry.name] = n.entry.isDir
+		if n.entry.isBucket {
+			t.Errorf("bucketless listing produced a bucket node: %q", n.entry.name)
+		}
+	}
+	if _, ok := names["db-url"]; !ok {
+		t.Errorf("expected leaf db-url, got %v", names)
+	}
+	if isDir, ok := names["prod/"]; !ok || !isDir {
+		t.Errorf("expected directory prod/, got %v", names)
+	}
+	if !canGoUp { // prefix != "" so we can go up even without bucket list
+		t.Errorf("expected canGoUp=true under a prefix")
+	}
+}
+
 func TestIconForEntry(t *testing.T) {
 	tests := []struct {
 		name     string

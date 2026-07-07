@@ -230,6 +230,73 @@ The version view shows a list of versions on the left with a content preview on 
 
 You can also access version history from the browser's context menu by selecting **Versions** on any file.
 
+## SSM Parameter Store
+
+`ssm://` edits **AWS Systems Manager Parameter Store** parameters with the same
+edit → diff → confirm flow. Parameter Store has no buckets: the whole path after
+the scheme is the parameter name, normalized to a single leading slash, so
+`ssm://myapp/db` and `ssm:///myapp/db` both mean `/myapp/db`.
+
+```bash
+# Edit a parameter value in your editor
+ladle ssm:///myapp/prod/db-url
+
+# Read / write via pipes (agent- and script-friendly)
+ladle ssm:///myapp/prod/db-url > value.txt          # read value to stdout
+echo -n 'postgres://new/db' | ladle --yes ssm:///myapp/prod/db-url
+
+# Create a new parameter (defaults to String; use --type for others)
+echo -n 's3cret' | ladle --yes --type SecureString ssm:///myapp/prod/api-token
+
+# List a path (directories keep a trailing slash); --recursive for the whole tree
+ladle ssm:///myapp/prod/
+ladle ssm:///myapp/ --recursive
+
+# Version history (tab-separated: version, mtime, type, modified-by, LATEST)
+ladle --versions ssm:///myapp/prod/db-url
+
+# Parameter attributes as YAML (type, tier, keyId, description, dataType)
+ladle --meta ssm:///myapp/prod/db-password
+ladle --meta ssm:///myapp/prod/db-password > meta.yaml
+```
+
+### SecureString safety
+
+SecureString values are **never exposed by default**. Any operation that would
+reveal plaintext — editing, piping the value out, or diffing an update — refuses
+unless you pass `--reveal`:
+
+```bash
+ladle --reveal ssm:///myapp/prod/db-password          # decrypt and edit
+ladle --reveal ssm:///myapp/prod/db-password > secret # decrypt to stdout
+```
+
+Notes:
+- On write, the original KMS key (`keyId`) and other attributes are preserved.
+- Editing a SecureString's metadata re-writes the parameter (SSM has no
+  metadata-only API), so `--meta` on a SecureString also needs `--reveal`.
+- A SecureString value can still be updated non-interactively without `--reveal`
+  by using `--yes`, which skips the (plaintext) diff
+  (e.g. `echo -n "$SECRET" | ladle --yes ssm:///myapp/prod/db-password`).
+- Piping into a **new** parameter creates a `String` unless you pass `--type`
+  (`String` | `StringList` | `SecureString`), so secrets aren't stored in
+  cleartext by accident.
+- Temp files are created `0600` in a private directory and removed on exit.
+
+**Required IAM actions** (scopable to the parameter / path ARN):
+`ssm:GetParameter` (read), `ssm:GetParametersByPath` (list & browse),
+`ssm:GetParameterHistory` (metadata & `--versions`), `ssm:PutParameter` (write),
+and `ssm:DeleteParameter` (browser delete / move); plus `kms:Decrypt` /
+`kms:Encrypt` on the key for SecureString.
+
+Interactive directory URIs open the same TUI browser as S3 (tree navigation,
+`/` filter, and a context menu for edit / metadata / versions / download /
+copy / move / delete). A name that is actually a namespace (has children but is
+not itself a parameter) opens the browser too, so a missing trailing slash still
+works. When stdout is redirected/piped, a listing is printed instead. In the
+browser, SecureString values are masked in the version-preview pane unless
+`--reveal` is set.
+
 ## Installation
 
 ### Homebrew
@@ -320,6 +387,9 @@ Use `--endpoint-url` to target the Azurite emulator.
 | `--yes` | `-y` | Skip confirmation prompt |
 | `--dry-run` | | Show diff without uploading |
 | `--force` | | Force editing of binary files |
+| `--reveal` | | Decrypt and expose SecureString values (`ssm://`) |
+| `--recursive` | | List parameters recursively (`ssm://`) |
+| `--type` | | Type when creating a new `ssm://` parameter (String\|StringList\|SecureString) |
 | `--profile` | | AWS named profile |
 | `--region` | | AWS region |
 | `--account` | | Azure storage account name (or `AZURE_STORAGE_ACCOUNT`) |

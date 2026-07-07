@@ -56,6 +56,9 @@ type flags struct {
 	yes            bool
 	force          bool
 	dryRun         bool
+	reveal         bool
+	recursive      bool
+	paramType      string
 	installComp    string
 	completeBucket bool
 	completePath   bool
@@ -104,7 +107,11 @@ Azure Blob Storage (container = bucket, blob = key):
   ladle --account myaccount az://container/path/to/file.html
   ladle az://container/path/to/file.html  # with AZURE_STORAGE_ACCOUNT set
   ladle az://container/path/to/           # file browser mode
-  ladle az://                             # container list browser`,
+  ladle az://                             # container list browser
+
+AWS SSM Parameter Store (ssm:// — no bucket; path is the parameter name):
+  ladle ssm:///myapp/prod/db-url                          # edit a parameter value
+  ladle --reveal ssm:///myapp/prod/db-password            # decrypt & edit a SecureString`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.MaximumNArgs(1),
@@ -125,6 +132,9 @@ Azure Blob Storage (container = bucket, blob = key):
 	cmd.Flags().BoolVarP(&f.yes, "yes", "y", false, "Skip confirmation prompt")
 	cmd.Flags().BoolVar(&f.force, "force", false, "Force editing of binary files")
 	cmd.Flags().BoolVar(&f.dryRun, "dry-run", false, "Show diff without uploading")
+	cmd.Flags().BoolVar(&f.reveal, "reveal", false, "Decrypt and expose SecureString values (ssm://)")
+	cmd.Flags().BoolVar(&f.recursive, "recursive", false, "List parameters recursively (ssm://)")
+	cmd.Flags().StringVar(&f.paramType, "type", "", "Parameter type when creating a new ssm:// parameter (String|StringList|SecureString)")
 	cmd.Flags().StringVar(&f.installComp, "install-completion", "", "Generate completion script (bash|zsh|fish)")
 	cmd.Flags().BoolVar(&f.completeBucket, "complete-bucket", false, "Internal: complete bucket names")
 	cmd.Flags().BoolVar(&f.completePath, "complete-path", false, "Internal: complete object paths")
@@ -214,6 +224,12 @@ func run(cmd *cobra.Command, args []string, f *flags) error {
 	u, err := uri.Parse(args[0])
 	if err != nil {
 		return err
+	}
+
+	// SSM Parameter Store has its own dispatcher; it does not use the
+	// storage.Client (bucket/object) model.
+	if u.Scheme == uri.SchemeSSM {
+		return runSSM(ctx, u, f)
 	}
 
 	client, err := newClient(ctx, u, f)
