@@ -433,6 +433,14 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.navigateToBucket(n.entry.name)
 		}
 		if n.entry.isDir {
+			// Opening a directory while a confirmed filter is active should reveal
+			// its full contents (consistent with how bucket/up navigation clears
+			// the filter). Otherwise the expanded children stay filtered and the
+			// directory looks empty or only shows matches.
+			if m.filterText != "" {
+				m, cmd := m.revealDir(n)
+				return m, cmd
+			}
 			if !n.loaded {
 				m.loading = true
 				return m, tea.Batch(m.startLoading(), m.loadChildren(n))
@@ -455,6 +463,10 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(visible) > 0 {
 			n := visible[m.cursor]
 			if n != nil && n.entry.isDir {
+				if m.filterText != "" {
+					m, cmd := m.revealDir(n)
+					return m, cmd
+				}
 				if !n.loaded {
 					m.loading = true
 					return m, tea.Batch(m.startLoading(), m.loadChildren(n))
@@ -1490,6 +1502,33 @@ func (m model) visibleNodes() []*node {
 		visible = append(visible, nil) // nil = ".."
 	}
 	return visible
+}
+
+// revealDir opens a directory node while a confirmed filter is active: it clears
+// the filter so the directory's full contents show, ensures the node is (or gets)
+// expanded, and keeps the cursor on the directory in the now-unfiltered list.
+func (m model) revealDir(n *node) (model, tea.Cmd) {
+	m.filtering = false
+	m.filterText = ""
+	if !n.loaded {
+		m.cursor = m.visibleIndexOf(n)
+		m.loading = true
+		return m, tea.Batch(m.startLoading(), m.loadChildren(n))
+	}
+	n.expanded = true
+	m.cursor = m.visibleIndexOf(n)
+	return m, nil
+}
+
+// visibleIndexOf returns the index of target in the current visible list, or 0
+// if it is not found.
+func (m model) visibleIndexOf(target *node) int {
+	for i, n := range m.visibleNodes() {
+		if n == target {
+			return i
+		}
+	}
+	return 0
 }
 
 // findParent finds the nearest ancestor directory node for the item at cursorIdx.

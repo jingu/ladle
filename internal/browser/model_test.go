@@ -737,6 +737,99 @@ func TestFilterEnterKeep(t *testing.T) {
 	}
 }
 
+func TestFilterEnterOpensDirClearsFilter(t *testing.T) {
+	children := []*node{
+		{entry: entry{name: "app.txt", key: "logs/app.txt"}, depth: 1},
+		{entry: entry{name: "err.txt", key: "logs/err.txt"}, depth: 1},
+	}
+	nodes := []*node{
+		{entry: entry{name: "logs/", key: "logs/", isDir: true}, loaded: true, children: children},
+		{entry: entry{name: "readme.md", key: "readme.md"}},
+	}
+	m := newTestModel(nodes, false)
+
+	// Confirm a filter that matches the directory name but not its children.
+	m.filterText = "log"
+	visible := m.visibleNodes()
+	if len(visible) != 1 || visible[0].entry.name != "logs/" {
+		t.Fatalf("expected only logs/ under filter, got %d nodes", len(visible))
+	}
+
+	// Enter on the directory should clear the filter and reveal all children.
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(model)
+	if cmd != nil {
+		t.Error("expected no command for an already-loaded directory")
+	}
+	if m.filterText != "" {
+		t.Errorf("expected filter cleared, got %q", m.filterText)
+	}
+	if !m.nodes[0].expanded {
+		t.Error("expected logs/ to be expanded")
+	}
+
+	visible = m.visibleNodes()
+	if len(visible) != 4 {
+		var names []string
+		for _, n := range visible {
+			names = append(names, n.entry.name)
+		}
+		t.Fatalf("expected 4 visible (logs/, app.txt, err.txt, readme.md), got %d: %v", len(visible), names)
+	}
+	if m.cursor != 0 {
+		t.Errorf("expected cursor to stay on logs/ (0), got %d", m.cursor)
+	}
+}
+
+func TestFilterRightArrowOpensDirClearsFilter(t *testing.T) {
+	children := []*node{
+		{entry: entry{name: "app.txt", key: "logs/app.txt"}, depth: 1},
+	}
+	nodes := []*node{
+		{entry: entry{name: "logs/", key: "logs/", isDir: true}, loaded: true, children: children},
+		{entry: entry{name: "readme.md", key: "readme.md"}},
+	}
+	m := newTestModel(nodes, false)
+	m.filterText = "log"
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	m = updated.(model)
+	if m.filterText != "" {
+		t.Errorf("expected filter cleared, got %q", m.filterText)
+	}
+	if !m.nodes[0].expanded {
+		t.Error("expected logs/ to be expanded")
+	}
+	if len(m.visibleNodes()) != 3 {
+		t.Fatalf("expected 3 visible after reveal, got %d", len(m.visibleNodes()))
+	}
+}
+
+func TestFilterEnterOpensUnloadedDirClearsFilter(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "logs/", key: "logs/", isDir: true}},
+		{entry: entry{name: "readme.md", key: "readme.md"}},
+	}
+	m := newTestModel(nodes, false)
+	m.filterText = "log"
+
+	// Enter on an unloaded directory clears the filter and dispatches a load.
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(model)
+	if m.filterText != "" {
+		t.Errorf("expected filter cleared, got %q", m.filterText)
+	}
+	if !m.loading {
+		t.Error("expected loading state while children are fetched")
+	}
+	if cmd == nil {
+		t.Fatal("expected a command to load children")
+	}
+	if m.cursor != 0 {
+		t.Errorf("expected cursor on logs/ (0), got %d", m.cursor)
+	}
+}
+
 func TestFilterBackspace(t *testing.T) {
 	nodes := []*node{
 		{entry: entry{name: "config.json", key: "config.json"}},
