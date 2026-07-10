@@ -52,6 +52,13 @@ type editDoneMsg struct {
 	message string
 }
 
+// newFileDoneMsg is sent after a new-file creation completes. On success the
+// current directory is reloaded so the new object appears.
+type newFileDoneMsg struct {
+	err     error
+	message string
+}
+
 // menuAction represents a context menu item.
 type menuAction int
 
@@ -63,6 +70,7 @@ const (
 	menuMove
 	menuDelete
 	menuVersions
+	menuNewFile // not shown in the context menu; triggered by the "n" key
 )
 
 var menuItems = []struct {
@@ -206,6 +214,15 @@ type model struct {
 	editMetaFn       EditMetaFunc
 	downloadFn       DownloadFunc
 	restoreVersionFn RestoreVersionFunc
+	newFileFn        NewFileFunc
+
+	// New-file type/choice selection (optional popup shown after naming a new file)
+	newFileChoices       []string
+	newFileChoiceTitle   string
+	newFileChoiceDefault int
+	newFileChoosing      bool   // choice popup is open
+	newFileName          string // name entered before the popup
+	newFileChoiceCursor  int
 }
 
 func (m model) Init() tea.Cmd {
@@ -237,6 +254,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.messageIsError = false
 		}
 		return m, tea.ClearScreen
+	case newFileDoneMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.message = apierror.Classify(msg.err).Error()
+			m.messageIsError = true
+			return m, tea.ClearScreen
+		}
+		m.message = msg.message
+		m.messageIsError = false
+		// Reload so the created object shows up in the current listing.
+		return m, tea.Batch(tea.ClearScreen, m.reloadView())
 	case tickMsg:
 		if m.loading {
 			m.spinnerFrame = (m.spinnerFrame + 1) % len(spinnerFrames)
@@ -350,6 +378,11 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleMenuKey(msg)
 	}
 
+	// New-file choice popup handling
+	if m.newFileChoosing {
+		return m.handleNewFileChoiceKey(msg)
+	}
+
 	// Filter mode handling
 	if m.filtering {
 		return m.handleFilterKey(msg)
@@ -458,10 +491,31 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "/":
 		m.filtering = true
 		m.filterText = ""
+	case "n":
+		return m.startNewFile()
 	case "ctrl+c":
 		m.quitting = true
 		return m, tea.Quit
 	}
+	return m, nil
+}
+
+// startNewFile opens the text input for a new object name, prefilled with the
+// current directory. It is a no-op in the S3 bucket-list root (no bucket to
+// create in); SSM's bucketless root is a valid target.
+func (m model) startNewFile() (tea.Model, tea.Cmd) {
+	if m.newFileFn == nil {
+		return m, nil
+	}
+	if m.bucket == "" && m.browser.bucketListEnabled {
+		m.message = "Select a bucket first"
+		m.messageIsError = true
+		return m, nil
+	}
+	m.inputMode = true
+	m.inputPrompt = "New file name"
+	m.inputText = m.prefix
+	m.inputAction = menuNewFile
 	return m, nil
 }
 
@@ -564,6 +618,52 @@ func (m model) handleMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m model) handleNewFileChoiceKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEscape:
+		m.newFileChoosing = false
+		m.newFileName = ""
+		return m, nil
+	case tea.KeyUp:
+		if m.newFileChoiceCursor > 0 {
+			m.newFileChoiceCursor--
+		}
+		return m, nil
+	case tea.KeyDown:
+		if m.newFileChoiceCursor < len(m.newFileChoices)-1 {
+			m.newFileChoiceCursor++
+		}
+		return m, nil
+	case tea.KeyEnter:
+		choice := m.newFileChoices[m.newFileChoiceCursor]
+		name := m.newFileName
+		m.newFileChoosing = false
+		m.newFileName = ""
+		cmd, err := m.execNewFile(name, choice)
+		if err != nil {
+			m.message = apierror.Classify(err).Error()
+			m.messageIsError = true
+			return m, nil
+		}
+		return m, cmd
+	case tea.KeyCtrlC:
+		m.quitting = true
+		return m, tea.Quit
+	}
+
+	switch msg.String() {
+	case "k", "ctrl+p":
+		if m.newFileChoiceCursor > 0 {
+			m.newFileChoiceCursor--
+		}
+	case "j", "ctrl+n":
+		if m.newFileChoiceCursor < len(m.newFileChoices)-1 {
+			m.newFileChoiceCursor++
+		}
+	}
+	return m, nil
+}
+
 func (m model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEscape:
@@ -613,7 +713,7 @@ func (m model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.KeyTab:
-		if m.inputAction == menuCopy || m.inputAction == menuMove {
+		if m.inputAction == menuCopy || m.inputAction == menuMove || m.inputAction == menuNewFile {
 			return m, m.tabComplete(m.inputText)
 		}
 		if m.inputAction == menuDownload {
@@ -698,6 +798,32 @@ func (m model) executeMenuAction(action menuAction) (tea.Model, tea.Cmd) {
 }
 
 func (m model) executeInput(action menuAction, text string) (tea.Model, tea.Cmd) {
+	// New file has no menu target: it creates a fresh object at the typed key.
+	if action == menuNewFile {
+		if text == "" || strings.HasSuffix(text, "/") {
+			m.message = "New file name must not be empty or end with /"
+			m.messageIsError = true
+			return m, nil
+		}
+		// With choices configured, pick one (arrow keys) before creating.
+		if len(m.newFileChoices) > 0 {
+			m.newFileChoosing = true
+			m.newFileName = text
+			m.newFileChoiceCursor = m.newFileChoiceDefault
+			if m.newFileChoiceCursor < 0 || m.newFileChoiceCursor >= len(m.newFileChoices) {
+				m.newFileChoiceCursor = 0
+			}
+			return m, nil
+		}
+		cmd, err := m.execNewFile(text, "")
+		if err != nil {
+			m.message = apierror.Classify(err).Error()
+			m.messageIsError = true
+			return m, nil
+		}
+		return m, cmd
+	}
+
 	target := m.menuTarget
 	m.menuTarget = nil
 
@@ -1213,6 +1339,61 @@ func (m model) execEdit(key string) (tea.Cmd, error) {
 	}), nil
 }
 
+// execNewFile suspends the TUI and runs the new-file workflow (editor on an
+// empty buffer, then upload). choice is the value picked from the choice popup
+// (empty when no choices are configured).
+func (m model) execNewFile(key, choice string) (tea.Cmd, error) {
+	if m.newFileFn == nil {
+		return nil, fmt.Errorf("new file creation not available")
+	}
+	raw := fmt.Sprintf("%s://%s/%s", m.scheme, m.bucket, key)
+	u, err := uri.Parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	c := &newFileCommand{newFileFn: m.newFileFn, uri: u, choice: choice}
+	return tea.Exec(c, func(err error) tea.Msg {
+		return newFileDoneMsg{err: err, message: c.message}
+	}), nil
+}
+
+// newFileCommand implements tea.ExecCommand to run the new-file workflow while
+// the TUI is suspended.
+type newFileCommand struct {
+	newFileFn NewFileFunc
+	uri       *uri.URI
+	choice    string
+	message   string
+	stdin     io.Reader
+	stdout    io.Writer
+	stderr    io.Writer
+}
+
+func (c *newFileCommand) Run() error {
+	msg, err := c.newFileFn(c.uri, c.choice)
+	c.message = msg
+	return err
+}
+func (c *newFileCommand) SetStdin(r io.Reader)  { c.stdin = r }
+func (c *newFileCommand) SetStdout(w io.Writer) { c.stdout = w }
+func (c *newFileCommand) SetStderr(w io.Writer) { c.stderr = w }
+
+// reloadView rebuilds the current directory's listing (e.g. after creating a
+// new object) and returns it as a navigatedMsg.
+func (m model) reloadView() tea.Cmd {
+	b := m.browser
+	ctx := m.ctx
+	bucket := m.bucket
+	prefix := m.prefix
+	return func() tea.Msg {
+		nodes, header, canGoUp, err := b.buildViewFor(ctx, bucket, prefix)
+		if err != nil {
+			return actionDoneMsg{err: err}
+		}
+		return navigatedMsg{nodes: nodes, header: header, canGoUp: canGoUp, bucket: bucket, prefix: prefix}
+	}
+}
+
 // navigateUp computes the parent and rebuilds the view.
 func (m model) navigateUp() tea.Cmd {
 	b := m.browser
@@ -1515,6 +1696,26 @@ func (m model) View() string {
 		b.WriteString("\n")
 	}
 
+	// New-file choice popup
+	if m.newFileChoosing {
+		b.WriteString("\n")
+		var choiceBuf strings.Builder
+		title := m.newFileChoiceTitle
+		if title == "" {
+			title = "Select"
+		}
+		choiceBuf.WriteString(styleMeta.Render(title+": "+m.newFileName) + "\n")
+		for i, c := range m.newFileChoices {
+			if i == m.newFileChoiceCursor {
+				choiceBuf.WriteString(styleCursor.Render("> ") + styleMenuSelected.Render(c) + "\n")
+			} else {
+				choiceBuf.WriteString("  " + styleMenuItem.Render(c) + "\n")
+			}
+		}
+		b.WriteString(styleMenuBorder.Render(choiceBuf.String()))
+		b.WriteString("\n")
+	}
+
 	// Version mode
 	if m.versionMode && len(m.versionList) > 0 {
 		b.WriteString("\n")
@@ -1551,12 +1752,17 @@ func (m model) View() string {
 		help = "  ↑/↓ navigate  C-d/C-u scroll  enter restore  esc close"
 	} else if m.menuOpen {
 		help = "  ↑/↓ navigate  enter select  esc/← close"
+	} else if m.newFileChoosing {
+		help = "  ↑/↓ navigate  enter select  esc cancel"
 	} else if m.inputMode {
 		help = "  tab complete  enter confirm  esc cancel"
 	} else {
 		help = "  ↑/↓ navigate  ←/→ collapse/expand  enter select  → menu"
 		if m.canGoUp {
 			help += "  - up"
+		}
+		if m.newFileFn != nil {
+			help += "  n new"
 		}
 		help += "  / filter  esc×2 quit"
 	}

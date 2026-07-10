@@ -2471,3 +2471,147 @@ func TestVersionPaneHeight(t *testing.T) {
 		t.Errorf("versionPaneHeight: got %d, want 7 (should not shrink to version count)", h)
 	}
 }
+
+func TestNewFileKeyOpensInput(t *testing.T) {
+	nodes := []*node{{entry: entry{name: "a.txt", key: "a.txt"}}}
+	m := newTestModel(nodes, false)
+	m.prefix = "dir/"
+	m.newFileFn = func(u *uri.URI, _ string) (string, error) { return "", nil }
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	nm := updated.(model)
+	if !nm.inputMode {
+		t.Fatal("pressing n should enter input mode")
+	}
+	if nm.inputAction != menuNewFile {
+		t.Errorf("inputAction = %v, want menuNewFile", nm.inputAction)
+	}
+	if nm.inputText != "dir/" {
+		t.Errorf("inputText = %q, want prefilled prefix %q", nm.inputText, "dir/")
+	}
+}
+
+func TestNewFileKeyNoopWithoutCallback(t *testing.T) {
+	m := newTestModel(nil, false) // newFileFn stays nil
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	if updated.(model).inputMode {
+		t.Error("n should be a no-op when new-file is unavailable")
+	}
+}
+
+func TestNewFileBlockedInBucketList(t *testing.T) {
+	m := newTestModel(nil, false)
+	m.bucket = "" // bucket-list root (bucketListEnabled defaults true)
+	m.newFileFn = func(u *uri.URI, _ string) (string, error) { return "", nil }
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	nm := updated.(model)
+	if nm.inputMode {
+		t.Error("should not enter input mode in the bucket-list root")
+	}
+	if !strings.Contains(nm.message, "bucket") {
+		t.Errorf("message = %q, want a hint about selecting a bucket", nm.message)
+	}
+}
+
+func TestNewFileCreatesViaCallback(t *testing.T) {
+	m := newTestModel(nil, false)
+	m.newFileFn = func(u *uri.URI, _ string) (string, error) { return "created", nil }
+
+	res, cmd := m.executeInput(menuNewFile, "sub/new.txt")
+	if cmd == nil {
+		t.Fatal("expected a command to run the new-file editor")
+	}
+	if res.(model).messageIsError {
+		t.Errorf("unexpected error message: %q", res.(model).message)
+	}
+}
+
+func TestNewFileRejectsEmptyOrDirName(t *testing.T) {
+	m := newTestModel(nil, false)
+	m.newFileFn = func(u *uri.URI, _ string) (string, error) { return "", nil }
+
+	for _, bad := range []string{"", "dir/"} {
+		res, cmd := m.executeInput(menuNewFile, bad)
+		if cmd != nil {
+			t.Errorf("name %q should be rejected, but got a command", bad)
+		}
+		if !res.(model).messageIsError {
+			t.Errorf("name %q should set an error message", bad)
+		}
+	}
+}
+
+func TestNewFileChoicePopupNavigates(t *testing.T) {
+	m := newTestModel(nil, false)
+	m.newFileChoices = []string{"String", "StringList", "SecureString"}
+	m.newFileChoiceTitle = "New parameter type"
+	m.newFileChoiceDefault = 0
+	m.newFileFn = func(u *uri.URI, _ string) (string, error) { return "", nil }
+
+	// Naming a new file opens the choice popup instead of creating immediately.
+	res, cmd := m.executeInput(menuNewFile, "app/token")
+	nm := res.(model)
+	if !nm.newFileChoosing {
+		t.Fatal("expected the choice popup to open when choices are configured")
+	}
+	if cmd != nil {
+		t.Error("no exec command should run before a choice is picked")
+	}
+	if nm.newFileName != "app/token" {
+		t.Errorf("newFileName = %q, want %q", nm.newFileName, "app/token")
+	}
+
+	// Arrow-down twice highlights SecureString (index 2).
+	r2, _ := nm.Update(tea.KeyMsg{Type: tea.KeyDown})
+	r3, _ := r2.(model).Update(tea.KeyMsg{Type: tea.KeyDown})
+	// Clamps at the last entry.
+	r4, _ := r3.(model).Update(tea.KeyMsg{Type: tea.KeyDown})
+	if got := r4.(model).newFileChoiceCursor; got != 2 {
+		t.Fatalf("cursor = %d, want 2 (clamped at last)", got)
+	}
+
+	// Enter picks the choice, closes the popup, and returns an exec command.
+	r5, cmd5 := r4.(model).Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd5 == nil {
+		t.Fatal("expected an exec command after selecting a choice")
+	}
+	if r5.(model).newFileChoosing {
+		t.Error("popup should close after selection")
+	}
+}
+
+func TestNewFileChoicePopupEscCancels(t *testing.T) {
+	m := newTestModel(nil, false)
+	m.newFileChoices = []string{"String", "StringList", "SecureString"}
+	m.newFileFn = func(u *uri.URI, _ string) (string, error) { return "", nil }
+
+	res, _ := m.executeInput(menuNewFile, "app/token")
+	nm := res.(model)
+	r, cmd := nm.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	if cmd != nil {
+		t.Error("esc should cancel without running a command")
+	}
+	if r.(model).newFileChoosing {
+		t.Error("esc should close the popup")
+	}
+}
+
+func TestNewFileCommandPassesChoice(t *testing.T) {
+	var got string
+	u, _ := uri.Parse("ssm:///app/token")
+	c := &newFileCommand{
+		newFileFn: func(_ *uri.URI, choice string) (string, error) { got = choice; return "ok", nil },
+		uri:       u,
+		choice:    "SecureString",
+	}
+	if err := c.Run(); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got != "SecureString" {
+		t.Errorf("choice passed to callback = %q, want SecureString", got)
+	}
+	if c.message != "ok" {
+		t.Errorf("message = %q, want ok", c.message)
+	}
+}

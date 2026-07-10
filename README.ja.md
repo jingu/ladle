@@ -113,6 +113,9 @@ ladle --meta s3://myapp/index.html < meta.yaml
 # 変換して再アップロード
 ladle s3://myapp/config.json | jq '.debug = true' | ladle --yes s3://myapp/config.json
 
+# 置き換えではなく既存の値に追記（存在しなければ新規作成）
+echo "$(date) deployed" | ladle --append --yes s3://myapp/deploy.log
+
 # オブジェクト/バケットを一覧（1行1URI、ディレクトリは末尾 / 付き）。
 # stdout を非TTY にするためリダイレクトかパイプを使う（端末のままだと TUI ブラウザが開く）。
 ladle s3://myapp/config/ > objects.txt   # config/ 配下のオブジェクトとサブディレクトリ
@@ -124,7 +127,7 @@ ladle --versions s3://myapp/config.json > versions.tsv
 
 stdout がリダイレクトされている場合、ディレクトリ URI（やスキーマのみ）は一覧を、`--versions` はバージョン履歴を出力します（対話 TUI は開きません）。
 
-stdin がリダイレクトされている場合、確認プロンプトは `/dev/tty` から読み取ります。非インタラクティブ環境では `--yes` を使用してください。オブジェクトが存在しない場合は新規作成されます。
+stdin がリダイレクトされている場合、確認プロンプトは `/dev/tty` から読み取ります。非インタラクティブ環境では `--yes` を使用してください。オブジェクトが存在しない場合は新規作成されます。`--append` を付けると既存の値を残したまま stdin を末尾に追記します（存在しない場合は新規作成）。
 
 ### ファイルをブラウズ
 
@@ -146,7 +149,7 @@ $ ladle s3://myapp/
   ..
 
   / index▏
-  ↑/↓ navigate  ←/→ collapse/expand  enter select  - up  / filter  esc×2 quit
+  ↑/↓ navigate  ←/→ collapse/expand  enter select  - up  n new  / filter  esc×2 quit
 ```
 
 - `↑/↓` で移動、`←/→` でディレクトリの展開/折りたたみ
@@ -154,6 +157,7 @@ $ ladle s3://myapp/
 - `Enter` でファイルを編集、完了後ブラウザに戻る
 - ファイル上で `→` でコンテキストメニューを開く
 - `-` で上のディレクトリへ
+- `n` で現在のディレクトリに新規ファイルを作成（空のバッファでエディタが開く）。`ssm://` では先に上下キーのポップアップでパラメータ型（String / StringList / SecureString）を選択します（既定は `--type`）。
 
 #### コンテキストメニュー
 

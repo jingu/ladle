@@ -113,6 +113,9 @@ ladle --meta s3://myapp/index.html < meta.yaml
 # Transform and re-upload
 ladle s3://myapp/config.json | jq '.debug = true' | ladle --yes s3://myapp/config.json
 
+# Append to the existing value instead of replacing it (creates the object if missing)
+echo "$(date) deployed" | ladle --append --yes s3://myapp/deploy.log
+
 # List objects/buckets (one URI per line; directories keep trailing /).
 # Redirect or pipe so stdout is non-TTY — a bare terminal opens the TUI browser instead.
 ladle s3://myapp/config/ > objects.txt   # objects + subdirectories under config/
@@ -124,7 +127,7 @@ ladle --versions s3://myapp/config.json > versions.tsv
 
 When stdout is redirected, a directory URI (or bare scheme) prints a listing and `--versions` prints version history, instead of opening the interactive TUI.
 
-When stdin is redirected, confirmation reads from `/dev/tty`. Use `--yes` to skip in non-interactive environments. If the object doesn't exist yet, stdin upload creates it as a new object.
+When stdin is redirected, confirmation reads from `/dev/tty`. Use `--yes` to skip in non-interactive environments. If the object doesn't exist yet, stdin upload creates it as a new object. Add `--append` to keep the existing value and add stdin after it (a missing object is still created).
 
 ### Browse files
 
@@ -146,7 +149,7 @@ $ ladle s3://myapp/
   ..
 
   / index▏
-  ↑/↓ navigate  ←/→ collapse/expand  enter select  - up  / filter  esc×2 quit
+  ↑/↓ navigate  ←/→ collapse/expand  enter select  - up  n new  / filter  esc×2 quit
 ```
 
 - `↑/↓` navigate, `←/→` expand/collapse directories
@@ -154,6 +157,7 @@ $ ladle s3://myapp/
 - `Enter` to edit a file, then return to the browser
 - `→` on a file to open the context menu
 - `-` to go up a directory
+- `n` to create a new file in the current directory (opens your editor on an empty buffer). For `ssm://`, an arrow-key popup lets you pick the parameter type (String / StringList / SecureString) first, defaulting to `--type`.
 
 #### Context menu
 

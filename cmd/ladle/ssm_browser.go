@@ -185,11 +185,28 @@ func runSSMBrowser(ctx context.Context, client ssm.Client, u *uri.URI, f *flags,
 	restoreFn := func(sel *uri.URI, versionID string) (string, error) {
 		return runSSMRestoreVersion(ctx, client, sel.Key, versionID, f)
 	}
+	newFileFn := func(sel *uri.URI, choice string) (string, error) {
+		return runSSMNewFile(ctx, client, sel.Key, f, choice)
+	}
+
+	// New parameters pick a type in the browser; default the highlight to the
+	// launch --type (String when unset).
+	paramTypes := []string{"String", "StringList", "SecureString"}
+	defType, _ := newParamType(f.paramType)
+	defIndex := 0
+	for i, t := range paramTypes {
+		if t == defType {
+			defIndex = i
+			break
+		}
+	}
 
 	opts := []browser.RunOption{
 		browser.WithEditMeta(editMetaFn),
 		browser.WithDownload(downloadFn),
 		browser.WithRestoreVersion(restoreFn),
+		browser.WithNewFile(newFileFn),
+		browser.WithNewFileChoices("New parameter type", paramTypes, defIndex),
 	}
 	opts = append(opts, extraOpts...)
 	return b.Run(ctx, editFn, opts...)
