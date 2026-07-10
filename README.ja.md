@@ -273,6 +273,7 @@ ladle --reveal ssm:///myapp/prod/db-password > secret # 復号して標準出力
 - 書き込み時、元の KMS キー（`keyId`）などの属性は保持されます。
 - SecureString のメタデータ編集はパラメータの再書き込みを伴う（SSM にメタデータ専用 API がない）ため、`--meta` でも `--reveal` が必要です。
 - SecureString の値更新は、`--yes` で（平文の）diff を省けば `--reveal` なしでも可能です（例: `echo -n "$SECRET" | ladle --yes ssm:///myapp/prod/db-password`）。
+- SecureString への `--append` は現在値を読み取って先頭に連結する必要があるため、`--yes` を付けても `--reveal` が必須です。
 - **新規**パラメータへの pipe-in は、`--type`（`String` | `StringList` | `SecureString`）を指定しない限り `String` で作成します（秘密の平文保存を防止）。
 - 一時ファイルは専用ディレクトリに `0600` で作成し、終了時に削除します。
 

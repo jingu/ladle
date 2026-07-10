@@ -282,6 +282,8 @@ Notes:
 - A SecureString value can still be updated non-interactively without `--reveal`
   by using `--yes`, which skips the (plaintext) diff
   (e.g. `echo -n "$SECRET" | ladle --yes ssm:///myapp/prod/db-password`).
+- `--append` to a SecureString always needs `--reveal` (it must read the current
+  value to prepend it), even with `--yes`.
 - Piping into a **new** parameter creates a `String` unless you pass `--type`
   (`String` | `StringList` | `SecureString`), so secrets aren't stored in
   cleartext by accident.
