@@ -20,7 +20,10 @@ func withStdin(t *testing.T, content string) {
 	}
 	orig := os.Stdin
 	os.Stdin = r
-	t.Cleanup(func() { os.Stdin = orig })
+	t.Cleanup(func() {
+		os.Stdin = orig
+		_ = r.Close()
+	})
 	go func() {
 		_, _ = w.WriteString(content)
 		_ = w.Close()
@@ -205,6 +208,21 @@ func TestRunSSMNewFile_DescribeErrorNotSwallowed(t *testing.T) {
 	f := &flags{yes: true}
 	if _, err := runSSMNewFile(ctx, c, "/app/x", f, "String"); !errors.Is(err, boom) {
 		t.Fatalf("expected the Describe error to surface, got %v", err)
+	}
+}
+
+// An invalid explicit type (e.g. a future/changed choice list) is rejected in
+// runSSMNewFile itself, not accepted and failing later in Put.
+func TestRunSSMNewFile_RejectsInvalidChoice(t *testing.T) {
+	ctx := context.Background()
+	c := ssm.NewFake()
+
+	f := &flags{yes: true}
+	if _, err := runSSMNewFile(ctx, c, "/app/x", f, "Bogus"); err == nil || !strings.Contains(err.Error(), "invalid --type") {
+		t.Fatalf("expected an invalid type error, got %v", err)
+	}
+	if len(c.Puts) != 0 {
+		t.Errorf("nothing should have been created, got %d puts", len(c.Puts))
 	}
 }
 

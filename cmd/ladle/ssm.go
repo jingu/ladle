@@ -233,13 +233,14 @@ func runSSMNewFile(ctx context.Context, client ssm.Client, name string, f *flags
 	}
 
 	// ptype is the type the user picked in the browser's choice popup; fall back
-	// to the launch --type (defaulting to String) when it's empty.
+	// to the launch --type when it's empty. Validate it either way so a bad value
+	// is rejected here rather than accepted and failing later in Put.
 	if ptype == "" {
-		def, err := newParamType(f.paramType)
-		if err != nil {
-			return "", err
-		}
-		ptype = def
+		ptype = f.paramType
+	}
+	ptype, err := newParamType(ptype)
+	if err != nil {
+		return "", err
 	}
 	md := &ssm.Metadata{Type: ptype}
 
