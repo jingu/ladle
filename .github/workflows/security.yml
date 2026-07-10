@@ -18,7 +18,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version: "1.26.5" # GO-2026-5856 (crypto/tls) fixed in 1.26.5
 
       - name: Install govulncheck
         # Intentionally @latest: security tools should always use the newest vulnerability database
