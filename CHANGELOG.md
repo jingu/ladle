@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `--append` flag for pipe-in: appends stdin to the existing value instead of replacing it
+  (works for `s3://`/`gs://`/`az://` objects and `ssm://` parameters; a missing target is
+  created). Appending to a SecureString requires `--reveal`.
+- New-file creation in the TUI browser: press `n` to name a new object and open the editor on
+  an empty buffer (S3-family and `ssm://`). Refuses to overwrite an existing key. For `ssm://`,
+  an arrow-key type selector (String / StringList / SecureString) appears before the editor,
+  defaulting to the launch `--type`, so the parameter type is chosen at creation time rather
+  than remembered from a launch flag.
 - Google Cloud Storage backend via the `gs://` scheme, using Application Default Credentials.
 - `--project` flag (with `GOOGLE_CLOUD_PROJECT` fallback) for GCS bucket listing.
 - GCS error classification, including the `ErrObjectNotExist` / `ErrBucketNotExist` sentinels
@@ -43,6 +51,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The auth error hint now covers AWS, GCS, and Azure credentials.
 - The permission / not-found error hints are now resource-generic (bucket / container /
   parameter) instead of S3-specific.
+- Editor-based `ssm://` writes (create via `n`, and edit) strip the trailing newline the
+  editor appends on save, since SSM stores values verbatim and a stray `\n` corrupts secrets
+  like passwords and tokens. A note is printed when a newline is removed. Pipe-in is unaffected
+  (stdin's exact bytes are kept; use `echo -n` / `printf`).
+- New-file creation is now strictly create-only: a non-NotFound `HeadObject` / `Describe`
+  failure (permission, throttling, network) aborts instead of being mistaken for "absent",
+  and existence is re-checked just before the write to narrow the create-only race. An
+  invalid `--type` now fails fast when launching the `ssm://` browser instead of being
+  silently ignored.
 
 ## [1.4.0] - 2026-02-27
 

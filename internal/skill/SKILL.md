@@ -103,6 +103,16 @@ cat new.json | ladle --yes s3://bucket/path/config.json
 - Existing object metadata is preserved.
 - See "never skip confirmation on your own" above before adding `--yes`.
 
+Add `--append` to keep the current content and add stdin after it instead of
+replacing it (a missing object is still created). Same confirm-first rule applies.
+
+```bash
+echo "$(date) deployed" | ladle --append --yes s3://bucket/path/deploy.log
+```
+
+For `ssm://`, `--append` needs the current value, so appending to a SecureString
+requires `--reveal`.
+
 ## Object metadata (YAML)
 
 Read metadata as YAML:
@@ -171,6 +181,7 @@ only, like objects.
 |------|---------|
 | `--yes`, `-y` | Skip confirmation — use only after the user approves the write |
 | `--dry-run` | Show the diff but do not upload (use this to preview first) |
+| `--append` | Pipe-in: append stdin to the existing value instead of replacing it |
 | `--meta` | Operate on object metadata instead of content |
 | `--versions` | List an object's / parameter's version history to stdout |
 | `--force` | Allow editing/uploading binary content |

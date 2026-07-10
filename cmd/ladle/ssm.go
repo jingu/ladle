@@ -172,7 +172,7 @@ func runSSMEdit(ctx context.Context, client ssm.Client, name string, f *flags) (
 	if err != nil {
 		return "", fmt.Errorf("reading modified file: %w", err)
 	}
-	modified := string(modifiedBytes)
+	modified := trimEditorNewline(string(modifiedBytes))
 
 	// Only remove the temp file once we have the edits in hand — an editor
 	// failure above leaves it in place for recovery.
@@ -204,6 +204,98 @@ func runSSMEdit(ctx context.Context, client ssm.Client, name string, f *flags) (
 			fmt.Fprintln(os.Stderr, msg)
 			return msg, nil
 		}
+	}
+
+	return ssmPut(ctx, client, name, modified, md)
+}
+
+// ensureParamAbsent keeps new-parameter creation create-only: it returns an
+// error if the parameter exists, or if its existence cannot be determined (any
+// non-NotFound error), so a permission/network failure never reads as "absent".
+func ensureParamAbsent(ctx context.Context, client ssm.Client, name, display string) error {
+	if _, err := client.Describe(ctx, name); err == nil {
+		return fmt.Errorf("%s already exists (select it and press Enter to edit)", display)
+	} else if !ssm.IsNotFound(err) {
+		return err
+	}
+	return nil
+}
+
+// runSSMNewFile creates a new parameter by opening the editor on an empty
+// buffer. It refuses to overwrite an existing parameter (create-only) and
+// defaults the type to String unless --type is given.
+func runSSMNewFile(ctx context.Context, client ssm.Client, name string, f *flags, ptype string) (string, error) {
+	display := ssmDisplay(name)
+
+	// Refuse to clobber an existing parameter; "new file" is create-only.
+	if err := ensureParamAbsent(ctx, client, name, display); err != nil {
+		return "", err
+	}
+
+	// ptype is the type the user picked in the browser's choice popup; fall back
+	// to the launch --type when it's empty. Validate it either way so a bad value
+	// is rejected here rather than accepted and failing later in Put.
+	if ptype == "" {
+		ptype = f.paramType
+	}
+	ptype, err := newParamType(ptype)
+	if err != nil {
+		return "", err
+	}
+	md := &ssm.Metadata{Type: ptype}
+
+	filename := path.Base(name)
+	tmpPath, err := editor.TempFile(filename, nil)
+	if err != nil {
+		return "", err
+	}
+	fmt.Fprintf(os.Stderr, "Temp file: %s\n", tmpPath)
+
+	editorCmd := editor.ResolveEditor(f.editorCmd)
+	if err := editor.Open(editorCmd, tmpPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Recovery: your edits are saved at %s\n", tmpPath)
+		return "", err
+	}
+
+	modifiedBytes, err := os.ReadFile(tmpPath)
+	if err != nil {
+		return "", fmt.Errorf("reading new file: %w", err)
+	}
+	defer editor.Cleanup(tmpPath)
+	modified := trimEditorNewline(string(modifiedBytes))
+
+	if modified == "" {
+		msg := "Empty value — nothing created."
+		fmt.Fprintln(os.Stderr, msg)
+		return msg, nil
+	}
+
+	diffText, tooLarge := diff.Generate("", modified, "empty", "new")
+	fmt.Fprintf(os.Stderr, "\nParameter: %s (%s)\n\n", display, ptype)
+	if tooLarge {
+		fmt.Fprintln(os.Stderr, "Value is too large to display a diff; skipping diff.")
+	} else {
+		diff.Print(os.Stderr, diffText)
+	}
+
+	if f.dryRun {
+		msg := "(dry-run: creation skipped)"
+		fmt.Fprintln(os.Stderr, "\n"+msg)
+		return msg, nil
+	}
+
+	if !f.yes {
+		if !confirm(os.Stdin, os.Stderr, "Create parameter?") {
+			msg := "Creation cancelled."
+			fmt.Fprintln(os.Stderr, msg)
+			return msg, nil
+		}
+	}
+
+	// Re-check just before writing: the editor session is long, so the parameter
+	// may have appeared meanwhile. Narrows (does not fully close) the race.
+	if err := ensureParamAbsent(ctx, client, name, display); err != nil {
+		return "", err
 	}
 
 	return ssmPut(ctx, client, name, modified, md)
@@ -276,6 +368,15 @@ func runSSMPipeIn(ctx context.Context, client ssm.Client, name string, f *flags)
 		original = param.Value
 	}
 
+	// Append mode needs the current value to prepend it. For an existing
+	// SecureString without --reveal we never fetched it, so append is impossible.
+	if f.append {
+		if !haveOriginal {
+			return fmt.Errorf("%s is a SecureString; --append needs the current value, re-run with --reveal", display)
+		}
+		modified = original + modified
+	}
+
 	// No-op detection runs whenever the current value is known, even with --yes.
 	if haveOriginal {
 		diffText, tooLarge := diff.Generate(original, modified, "remote", "stdin")
@@ -314,6 +415,19 @@ func runSSMPipeIn(ctx context.Context, client ssm.Client, name string, f *flags)
 
 // newParamType validates the --type flag for a to-be-created parameter,
 // defaulting to String when unset.
+// trimEditorNewline removes trailing newline(s) that an editor (e.g. vim, via
+// fixeol) appends on save. SSM stores values verbatim, so a stray "\n" silently
+// corrupts secrets like passwords and tokens. It prints a note to stderr when it
+// changes the value, keeping the mutation visible before the diff/confirm. Only
+// the editor-based flows call this — pipe-in keeps stdin's exact bytes.
+func trimEditorNewline(value string) string {
+	trimmed := strings.TrimRight(value, "\r\n")
+	if trimmed != value {
+		fmt.Fprintln(os.Stderr, "Note: removed trailing newline(s) — SSM values are stored verbatim (use pipe-in to keep them).")
+	}
+	return trimmed
+}
+
 func newParamType(flagVal string) (string, error) {
 	switch flagVal {
 	case "":

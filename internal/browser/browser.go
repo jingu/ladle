@@ -24,6 +24,12 @@ type EditMetaFunc func(u *uri.URI) (string, error)
 // It receives the parsed URI and a local directory path.
 type DownloadFunc func(u *uri.URI, dir string) (string, error)
 
+// NewFileFunc is called to create a new object. It receives the parsed URI of
+// the object to create and the choice the user picked from the new-file choice
+// list (empty when no choices were configured), and returns a status message
+// and error.
+type NewFileFunc func(u *uri.URI, choice string) (string, error)
+
 // RestoreVersionFunc is called to restore a specific version of an object.
 // It receives the parsed URI and the version ID to restore.
 type RestoreVersionFunc func(u *uri.URI, versionID string) (string, error)
@@ -65,10 +71,14 @@ func (b *Browser) SetBucketListEnabled(enabled bool) {
 type RunOption func(*runOptions)
 
 type runOptions struct {
-	editMetaFn       EditMetaFunc
-	downloadFn       DownloadFunc
-	restoreVersionFn RestoreVersionFunc
-	versionsKey      string
+	editMetaFn           EditMetaFunc
+	downloadFn           DownloadFunc
+	restoreVersionFn     RestoreVersionFunc
+	newFileFn            NewFileFunc
+	newFileChoices       []string
+	newFileChoiceTitle   string
+	newFileChoiceDefault int
+	versionsKey          string
 }
 
 // WithEditMeta sets the callback for editing metadata.
@@ -84,6 +94,23 @@ func WithDownload(fn DownloadFunc) RunOption {
 // WithRestoreVersion sets the callback for restoring a specific version.
 func WithRestoreVersion(fn RestoreVersionFunc) RunOption {
 	return func(o *runOptions) { o.restoreVersionFn = fn }
+}
+
+// WithNewFile sets the callback for creating a new file (bound to the "n" key).
+func WithNewFile(fn NewFileFunc) RunOption {
+	return func(o *runOptions) { o.newFileFn = fn }
+}
+
+// WithNewFileChoices makes the "n" flow present a selection popup (navigated with
+// the arrow keys) before creating the file. The picked choice is passed to the
+// NewFileFunc. defaultIndex is the initially-highlighted entry. With no choices
+// configured, the new-file flow skips the popup and passes an empty choice.
+func WithNewFileChoices(title string, choices []string, defaultIndex int) RunOption {
+	return func(o *runOptions) {
+		o.newFileChoiceTitle = title
+		o.newFileChoices = choices
+		o.newFileChoiceDefault = defaultIndex
+	}
 }
 
 // WithVersionsKey sets the object key to show version history for immediately on startup.
@@ -105,22 +132,26 @@ func (b *Browser) Run(ctx context.Context, editFn EditFunc, opts ...RunOption) e
 	}
 
 	m := model{
-		nodes:            nodes,
-		header:           header,
-		version:          b.version,
-		canGoUp:          canGoUp,
-		client:           b.client,
-		ctx:              ctx,
-		bucket:           b.bucket,
-		prefix:           b.prefix,
-		scheme:           string(b.scheme),
-		browser:          b,
-		editFn:           editFn,
-		editMetaFn:       ro.editMetaFn,
-		downloadFn:       ro.downloadFn,
-		restoreVersionFn: ro.restoreVersionFn,
-		initVersionKey:   ro.versionsKey,
-		loading:          ro.versionsKey != "",
+		nodes:                nodes,
+		header:               header,
+		version:              b.version,
+		canGoUp:              canGoUp,
+		client:               b.client,
+		ctx:                  ctx,
+		bucket:               b.bucket,
+		prefix:               b.prefix,
+		scheme:               string(b.scheme),
+		browser:              b,
+		editFn:               editFn,
+		editMetaFn:           ro.editMetaFn,
+		downloadFn:           ro.downloadFn,
+		restoreVersionFn:     ro.restoreVersionFn,
+		newFileFn:            ro.newFileFn,
+		newFileChoices:       ro.newFileChoices,
+		newFileChoiceTitle:   ro.newFileChoiceTitle,
+		newFileChoiceDefault: ro.newFileChoiceDefault,
+		initVersionKey:       ro.versionsKey,
+		loading:              ro.versionsKey != "",
 	}
 
 	p := tea.NewProgram(m, tea.WithInput(b.in), tea.WithOutput(b.out))

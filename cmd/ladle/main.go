@@ -56,6 +56,7 @@ type flags struct {
 	yes            bool
 	force          bool
 	dryRun         bool
+	append         bool
 	reveal         bool
 	recursive      bool
 	paramType      string
@@ -84,7 +85,7 @@ func newRootCmd() *cobra.Command {
 Edit cloud storage files directly from your terminal.
 Download, edit in your favorite editor, diff, confirm, upload — all in one shot.
 
-Supported backends: AWS S3 (s3://), Google Cloud Storage (gs://), and Azure Blob Storage (az://).
+Supported backends: AWS S3 (s3://), Google Cloud Storage (gs://), Azure Blob Storage (az://), and AWS SSM Parameter Store (ssm://).
 
 Examples:
   ladle s3://bucket/path/to/file.html
@@ -132,6 +133,7 @@ AWS SSM Parameter Store (ssm:// — no bucket; path is the parameter name):
 	cmd.Flags().BoolVarP(&f.yes, "yes", "y", false, "Skip confirmation prompt")
 	cmd.Flags().BoolVar(&f.force, "force", false, "Force editing of binary files")
 	cmd.Flags().BoolVar(&f.dryRun, "dry-run", false, "Show diff without uploading")
+	cmd.Flags().BoolVar(&f.append, "append", false, "Append stdin to the existing value instead of replacing it (pipe-in)")
 	cmd.Flags().BoolVar(&f.reveal, "reveal", false, "Decrypt and expose SecureString values (ssm://)")
 	cmd.Flags().BoolVar(&f.recursive, "recursive", false, "List parameters recursively (ssm://)")
 	cmd.Flags().StringVar(&f.paramType, "type", "", "Parameter type when creating a new ssm:// parameter (String|StringList|SecureString)")
@@ -453,6 +455,100 @@ func runFileEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flag
 	return msg, nil
 }
 
+// ensureObjectAbsent keeps new-file creation create-only: it returns an error if
+// the object exists, or if its existence cannot be determined (any non-NotFound
+// error). Treating a permission/throttling/network failure as "absent" would let
+// the caller overwrite a real object, so only a genuine NotFound clears the way.
+func ensureObjectAbsent(ctx context.Context, client storage.Client, u *uri.URI) error {
+	_, err := client.HeadObject(ctx, u.Bucket, u.Key)
+	if err == nil {
+		return fmt.Errorf("%s already exists (select it and press Enter to edit)", u)
+	}
+	classified := apierror.Classify(err)
+	var ae *apierror.Error
+	if !errors.As(classified, &ae) || ae.Kind != apierror.KindNotFound {
+		return err
+	}
+	return nil
+}
+
+// runNewFile creates a new object: it opens the editor on an empty buffer and
+// uploads the result. It refuses to overwrite an existing object (create-only).
+func runNewFile(ctx context.Context, client storage.Client, u *uri.URI, f *flags) (string, error) {
+	// Refuse to clobber an existing object; "new file" is create-only.
+	if err := ensureObjectAbsent(ctx, client, u); err != nil {
+		return "", err
+	}
+
+	// Open the editor on an empty temp file.
+	filename := filepath.Base(u.Key)
+	tmpPath, err := editor.TempFile(filename, nil)
+	if err != nil {
+		return "", err
+	}
+	fmt.Fprintf(os.Stderr, "Temp file: %s\n", tmpPath)
+
+	editorCmd := editor.ResolveEditor(f.editorCmd)
+	if err := editor.Open(editorCmd, tmpPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Recovery: your edits are saved at %s\n", tmpPath)
+		return "", err
+	}
+
+	modifiedBytes, err := os.ReadFile(tmpPath)
+	if err != nil {
+		return "", fmt.Errorf("reading new file: %w", err)
+	}
+	defer editor.Cleanup(tmpPath)
+	modified := string(modifiedBytes)
+
+	if modified == "" {
+		msg := "Empty file — nothing created."
+		fmt.Fprintln(os.Stderr, msg)
+		return msg, nil
+	}
+
+	// Show what will be created (a diff against empty).
+	diffText, tooLarge := diff.Generate("", modified, "empty", "new")
+	fmt.Fprintf(os.Stderr, "\nFile: %s\n\n", u)
+	if tooLarge {
+		fmt.Fprintln(os.Stderr, "File is too large to display a diff; skipping diff.")
+	} else {
+		diff.Print(os.Stderr, diffText)
+	}
+
+	if f.dryRun {
+		msg := "(dry-run: upload skipped)"
+		fmt.Fprintln(os.Stderr, "\n"+msg)
+		return msg, nil
+	}
+
+	if !f.yes {
+		if !confirm(os.Stdin, os.Stderr, "Create file?") {
+			msg := "Creation cancelled."
+			fmt.Fprintln(os.Stderr, msg)
+			return msg, nil
+		}
+	}
+
+	// Re-check just before writing: the editor session is long, so an object may
+	// have appeared meanwhile. This narrows (does not fully close) the create-only
+	// race — the backend has no conditional-PUT precondition here.
+	if err := ensureObjectAbsent(ctx, client, u); err != nil {
+		return "", err
+	}
+
+	newMeta := &storage.ObjectMetadata{ContentType: contenttype.Detect(u.Key)}
+	sp := spinner.New(os.Stderr, fmt.Sprintf("Creating %s ...", u))
+	sp.Start()
+	if err := client.Upload(ctx, u.Bucket, u.Key, strings.NewReader(modified), newMeta); err != nil {
+		sp.Stop()
+		return "", err
+	}
+	msg := fmt.Sprintf("✓ Created %s", u)
+	sp.StopWithMessage(msg)
+	return msg, nil
+}
+
 func runMetaEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flags) (string, error) {
 	// Fetch metadata
 	sp := spinner.New(os.Stderr, fmt.Sprintf("Fetching metadata for %s ...", u))
@@ -557,10 +653,14 @@ func runBrowser(ctx context.Context, client storage.Client, u *uri.URI, f *flags
 	restoreVersionFn := func(selected *uri.URI, versionID string) (string, error) {
 		return runRestoreVersion(ctx, client, selected, versionID)
 	}
+	newFileFn := func(selected *uri.URI, _ string) (string, error) {
+		return runNewFile(ctx, client, selected, f)
+	}
 	opts := []browser.RunOption{
 		browser.WithEditMeta(editMetaFn),
 		browser.WithDownload(downloadFn),
 		browser.WithRestoreVersion(restoreVersionFn),
+		browser.WithNewFile(newFileFn),
 	}
 	opts = append(opts, extraOpts...)
 	return b.Run(ctx, editFn, opts...)
@@ -717,6 +817,12 @@ func runPipeIn(ctx context.Context, client storage.Client, u *uri.URI, f *flags,
 	} else {
 		sp.StopWithMessage(fmt.Sprintf("✓ Downloaded %s", u))
 		original = buf.String()
+	}
+
+	// Append mode: keep the existing content and add stdin after it. A missing
+	// object leaves original empty, so append degrades to a plain create.
+	if f.append {
+		modified = original + modified
 	}
 
 	// Check for changes

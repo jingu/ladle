@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -198,6 +199,45 @@ func TestRunPipeIn_ConfirmNo(t *testing.T) {
 	}
 }
 
+func TestRunPipeIn_Append(t *testing.T) {
+	ctx := context.Background()
+	m := storage.NewMockClient()
+	m.PutObject("bucket", "log.txt", []byte("line1\n"), nil)
+
+	in := strings.NewReader("line2\n")
+	f := &flags{yes: true, append: true}
+	if err := runPipeIn(ctx, m, mustParse(t, "s3://bucket/log.txt"), f, in, confirmFail); err != nil {
+		t.Fatalf("runPipeIn (append): %v", err)
+	}
+
+	var got bytes.Buffer
+	if err := m.Download(ctx, "bucket", "log.txt", &got); err != nil {
+		t.Fatalf("download: %v", err)
+	}
+	if got.String() != "line1\nline2\n" {
+		t.Errorf("appended content = %q, want %q", got.String(), "line1\nline2\n")
+	}
+}
+
+func TestRunPipeIn_AppendToNewObject(t *testing.T) {
+	ctx := context.Background()
+	m := storage.NewMockClient()
+
+	in := strings.NewReader("first\n")
+	f := &flags{yes: true, append: true}
+	if err := runPipeIn(ctx, m, mustParse(t, "s3://bucket/new.txt"), f, in, confirmFail); err != nil {
+		t.Fatalf("runPipeIn (append to new): %v", err)
+	}
+
+	var got bytes.Buffer
+	if err := m.Download(ctx, "bucket", "new.txt", &got); err != nil {
+		t.Fatalf("download: %v", err)
+	}
+	if got.String() != "first\n" {
+		t.Errorf("append to missing object should create it; content = %q, want %q", got.String(), "first\n")
+	}
+}
+
 func TestRunPipeIn_ConfirmOpenFails(t *testing.T) {
 	ctx := context.Background()
 	m := storage.NewMockClient()
@@ -342,5 +382,112 @@ func TestRunMetaPipeIn_ConfirmNo(t *testing.T) {
 	got, _ := m.HeadObject(ctx, "bucket", "file.html")
 	if got.ContentType != "text/html" {
 		t.Errorf("declined update must keep original; ContentType = %q, want %q", got.ContentType, "text/html")
+	}
+}
+
+func TestRunNewFile_RefusesExisting(t *testing.T) {
+	ctx := context.Background()
+	m := storage.NewMockClient()
+	m.PutObject("bucket", "exists.txt", []byte("data"), nil)
+
+	f := &flags{yes: true}
+	_, err := runNewFile(ctx, m, mustParse(t, "s3://bucket/exists.txt"), f)
+	if err == nil {
+		t.Fatal("expected runNewFile to refuse overwriting an existing object")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("error = %q, want it to mention 'already exists'", err.Error())
+	}
+}
+
+// headErrClient wraps a MockClient but forces HeadObject to fail with a
+// non-NotFound error, simulating a permission/throttling/network failure.
+type headErrClient struct {
+	*storage.MockClient
+	err error
+}
+
+func (c headErrClient) HeadObject(context.Context, string, string) (*storage.ObjectMetadata, error) {
+	return nil, c.err
+}
+
+// A non-NotFound HeadObject failure must abort create-only creation, not be
+// mistaken for "absent" and allowed to overwrite.
+func TestRunNewFile_HeadErrorNotSwallowed(t *testing.T) {
+	ctx := context.Background()
+	boom := errors.New("access denied")
+	c := headErrClient{MockClient: storage.NewMockClient(), err: boom}
+
+	f := &flags{yes: true}
+	_, err := runNewFile(ctx, c, mustParse(t, "s3://bucket/x.txt"), f)
+	if !errors.Is(err, boom) {
+		t.Fatalf("expected the HeadObject error to surface, got %v", err)
+	}
+}
+
+// writeFakeEditor writes an executable shell script that stands in for $EDITOR.
+func writeFakeEditor(t *testing.T, body string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "fake-editor.sh")
+	if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body), 0755); err != nil {
+		t.Fatalf("writing fake editor: %v", err)
+	}
+	return p
+}
+
+// Simulates vim `:q!` on the empty new-file buffer: the editor exits 0 without
+// ever writing the temp file. Nothing must be created.
+func TestRunNewFile_QuitWithoutSaving(t *testing.T) {
+	ctx := context.Background()
+	m := storage.NewMockClient()
+	ed := writeFakeEditor(t, "exit 0\n") // never touches "$1"
+
+	f := &flags{yes: true, editorCmd: ed}
+	msg, err := runNewFile(ctx, m, mustParse(t, "s3://bucket/ghost.txt"), f)
+	if err != nil {
+		t.Fatalf("runNewFile: %v", err)
+	}
+	if !strings.Contains(msg, "nothing created") {
+		t.Errorf("message = %q, want it to report nothing created", msg)
+	}
+	if _, err := m.HeadObject(ctx, "bucket", "ghost.txt"); err == nil {
+		t.Error("no object should have been created after quit-without-saving")
+	}
+}
+
+// Simulates saving content in the editor: the temp file ends up non-empty and
+// the object is created.
+func TestRunNewFile_SavesContent(t *testing.T) {
+	ctx := context.Background()
+	m := storage.NewMockClient()
+	ed := writeFakeEditor(t, "printf 'hello world' > \"$1\"\nexit 0\n")
+
+	f := &flags{yes: true, editorCmd: ed}
+	if _, err := runNewFile(ctx, m, mustParse(t, "s3://bucket/created.txt"), f); err != nil {
+		t.Fatalf("runNewFile: %v", err)
+	}
+	var got bytes.Buffer
+	if err := m.Download(ctx, "bucket", "created.txt", &got); err != nil {
+		t.Fatalf("download: %v", err)
+	}
+	if got.String() != "hello world" {
+		t.Errorf("created content = %q, want %q", got.String(), "hello world")
+	}
+}
+
+// Simulates vim `:cq` / an editor crash: non-zero exit surfaces an error and
+// creates nothing.
+func TestRunNewFile_EditorFails(t *testing.T) {
+	ctx := context.Background()
+	m := storage.NewMockClient()
+	ed := writeFakeEditor(t, "exit 1\n")
+
+	f := &flags{yes: true, editorCmd: ed}
+	_, err := runNewFile(ctx, m, mustParse(t, "s3://bucket/nope.txt"), f)
+	if err == nil {
+		t.Fatal("expected an error when the editor exits non-zero")
+	}
+	if _, err := m.HeadObject(ctx, "bucket", "nope.txt"); err == nil {
+		t.Error("no object should have been created after an editor failure")
 	}
 }
