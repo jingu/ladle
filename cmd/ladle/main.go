@@ -462,7 +462,7 @@ func runFileEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flag
 func ensureObjectAbsent(ctx context.Context, client storage.Client, u *uri.URI) error {
 	_, err := client.HeadObject(ctx, u.Bucket, u.Key)
 	if err == nil {
-		return fmt.Errorf("%s already exists; use Edit instead", u)
+		return fmt.Errorf("%s already exists (select it and press Enter to edit)", u)
 	}
 	classified := apierror.Classify(err)
 	var ae *apierror.Error

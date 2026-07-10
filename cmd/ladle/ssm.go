@@ -214,7 +214,7 @@ func runSSMEdit(ctx context.Context, client ssm.Client, name string, f *flags) (
 // non-NotFound error), so a permission/network failure never reads as "absent".
 func ensureParamAbsent(ctx context.Context, client ssm.Client, name, display string) error {
 	if _, err := client.Describe(ctx, name); err == nil {
-		return fmt.Errorf("%s already exists; use Edit instead", display)
+		return fmt.Errorf("%s already exists (select it and press Enter to edit)", display)
 	} else if !ssm.IsNotFound(err) {
 		return err
 	}
