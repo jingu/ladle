@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -181,6 +182,42 @@ func TestRunSSMNewFile_EmptyChoiceFallsBackToType(t *testing.T) {
 	}
 	if p := c.Params["/app/list"]; p == nil || p.Type != "StringList" {
 		t.Errorf("empty choice should fall back to --type StringList, got %+v", p)
+	}
+}
+
+// describeErrClient wraps a FakeClient but forces Describe to fail with a
+// non-NotFound error.
+type describeErrClient struct {
+	*ssm.FakeClient
+	err error
+}
+
+func (c describeErrClient) Describe(context.Context, string) (*ssm.Metadata, error) {
+	return nil, c.err
+}
+
+// A non-NotFound Describe failure must abort create-only creation.
+func TestRunSSMNewFile_DescribeErrorNotSwallowed(t *testing.T) {
+	ctx := context.Background()
+	boom := errors.New("AccessDeniedException")
+	c := describeErrClient{FakeClient: ssm.NewFake(), err: boom}
+
+	f := &flags{yes: true}
+	if _, err := runSSMNewFile(ctx, c, "/app/x", f, "String"); !errors.Is(err, boom) {
+		t.Fatalf("expected the Describe error to surface, got %v", err)
+	}
+}
+
+// An invalid --type must fail fast when launching the browser, matching the
+// pipe-in / edit flows, instead of being silently ignored.
+func TestRunSSMBrowser_RejectsInvalidType(t *testing.T) {
+	ctx := context.Background()
+	c := ssm.NewFake()
+
+	f := &flags{paramType: "Nope"}
+	err := runSSMBrowser(ctx, c, mustParse(t, "ssm:///app/"), f)
+	if err == nil || !strings.Contains(err.Error(), "invalid --type") {
+		t.Fatalf("expected an invalid --type error, got %v", err)
 	}
 }
 

@@ -400,6 +400,31 @@ func TestRunNewFile_RefusesExisting(t *testing.T) {
 	}
 }
 
+// headErrClient wraps a MockClient but forces HeadObject to fail with a
+// non-NotFound error, simulating a permission/throttling/network failure.
+type headErrClient struct {
+	*storage.MockClient
+	err error
+}
+
+func (c headErrClient) HeadObject(context.Context, string, string) (*storage.ObjectMetadata, error) {
+	return nil, c.err
+}
+
+// A non-NotFound HeadObject failure must abort create-only creation, not be
+// mistaken for "absent" and allowed to overwrite.
+func TestRunNewFile_HeadErrorNotSwallowed(t *testing.T) {
+	ctx := context.Background()
+	boom := errors.New("access denied")
+	c := headErrClient{MockClient: storage.NewMockClient(), err: boom}
+
+	f := &flags{yes: true}
+	_, err := runNewFile(ctx, c, mustParse(t, "s3://bucket/x.txt"), f)
+	if !errors.Is(err, boom) {
+		t.Fatalf("expected the HeadObject error to surface, got %v", err)
+	}
+}
+
 // writeFakeEditor writes an executable shell script that stands in for $EDITOR.
 func writeFakeEditor(t *testing.T, body string) string {
 	t.Helper()

@@ -190,9 +190,13 @@ func runSSMBrowser(ctx context.Context, client ssm.Client, u *uri.URI, f *flags,
 	}
 
 	// New parameters pick a type in the browser; default the highlight to the
-	// launch --type (String when unset).
+	// launch --type (String when unset). An invalid --type fails fast here, the
+	// same as the pipe-in / edit flows, rather than being silently ignored.
 	paramTypes := []string{"String", "StringList", "SecureString"}
-	defType, _ := newParamType(f.paramType)
+	defType, err := newParamType(f.paramType)
+	if err != nil {
+		return err
+	}
 	defIndex := 0
 	for i, t := range paramTypes {
 		if t == defType {

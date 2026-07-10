@@ -455,12 +455,29 @@ func runFileEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flag
 	return msg, nil
 }
 
+// ensureObjectAbsent keeps new-file creation create-only: it returns an error if
+// the object exists, or if its existence cannot be determined (any non-NotFound
+// error). Treating a permission/throttling/network failure as "absent" would let
+// the caller overwrite a real object, so only a genuine NotFound clears the way.
+func ensureObjectAbsent(ctx context.Context, client storage.Client, u *uri.URI) error {
+	_, err := client.HeadObject(ctx, u.Bucket, u.Key)
+	if err == nil {
+		return fmt.Errorf("%s already exists; use Edit instead", u)
+	}
+	classified := apierror.Classify(err)
+	var ae *apierror.Error
+	if !errors.As(classified, &ae) || ae.Kind != apierror.KindNotFound {
+		return err
+	}
+	return nil
+}
+
 // runNewFile creates a new object: it opens the editor on an empty buffer and
 // uploads the result. It refuses to overwrite an existing object (create-only).
 func runNewFile(ctx context.Context, client storage.Client, u *uri.URI, f *flags) (string, error) {
 	// Refuse to clobber an existing object; "new file" is create-only.
-	if _, err := client.HeadObject(ctx, u.Bucket, u.Key); err == nil {
-		return "", fmt.Errorf("%s already exists; use Edit instead", u)
+	if err := ensureObjectAbsent(ctx, client, u); err != nil {
+		return "", err
 	}
 
 	// Open the editor on an empty temp file.
@@ -511,6 +528,13 @@ func runNewFile(ctx context.Context, client storage.Client, u *uri.URI, f *flags
 			fmt.Fprintln(os.Stderr, msg)
 			return msg, nil
 		}
+	}
+
+	// Re-check just before writing: the editor session is long, so an object may
+	// have appeared meanwhile. This narrows (does not fully close) the create-only
+	// race — the backend has no conditional-PUT precondition here.
+	if err := ensureObjectAbsent(ctx, client, u); err != nil {
+		return "", err
 	}
 
 	newMeta := &storage.ObjectMetadata{ContentType: contenttype.Detect(u.Key)}

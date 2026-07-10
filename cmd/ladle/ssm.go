@@ -209,6 +209,18 @@ func runSSMEdit(ctx context.Context, client ssm.Client, name string, f *flags) (
 	return ssmPut(ctx, client, name, modified, md)
 }
 
+// ensureParamAbsent keeps new-parameter creation create-only: it returns an
+// error if the parameter exists, or if its existence cannot be determined (any
+// non-NotFound error), so a permission/network failure never reads as "absent".
+func ensureParamAbsent(ctx context.Context, client ssm.Client, name, display string) error {
+	if _, err := client.Describe(ctx, name); err == nil {
+		return fmt.Errorf("%s already exists; use Edit instead", display)
+	} else if !ssm.IsNotFound(err) {
+		return err
+	}
+	return nil
+}
+
 // runSSMNewFile creates a new parameter by opening the editor on an empty
 // buffer. It refuses to overwrite an existing parameter (create-only) and
 // defaults the type to String unless --type is given.
@@ -216,9 +228,7 @@ func runSSMNewFile(ctx context.Context, client ssm.Client, name string, f *flags
 	display := ssmDisplay(name)
 
 	// Refuse to clobber an existing parameter; "new file" is create-only.
-	if _, err := client.Describe(ctx, name); err == nil {
-		return "", fmt.Errorf("%s already exists; use Edit instead", display)
-	} else if !ssm.IsNotFound(err) {
+	if err := ensureParamAbsent(ctx, client, name, display); err != nil {
 		return "", err
 	}
 
@@ -279,6 +289,12 @@ func runSSMNewFile(ctx context.Context, client ssm.Client, name string, f *flags
 			fmt.Fprintln(os.Stderr, msg)
 			return msg, nil
 		}
+	}
+
+	// Re-check just before writing: the editor session is long, so the parameter
+	// may have appeared meanwhile. Narrows (does not fully close) the race.
+	if err := ensureParamAbsent(ctx, client, name, display); err != nil {
+		return "", err
 	}
 
 	return ssmPut(ctx, client, name, modified, md)

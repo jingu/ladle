@@ -55,6 +55,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   editor appends on save, since SSM stores values verbatim and a stray `\n` corrupts secrets
   like passwords and tokens. A note is printed when a newline is removed. Pipe-in is unaffected
   (stdin's exact bytes are kept; use `echo -n` / `printf`).
+- New-file creation is now strictly create-only: a non-NotFound `HeadObject` / `Describe`
+  failure (permission, throttling, network) aborts instead of being mistaken for "absent",
+  and existence is re-checked just before the write to narrow the create-only race. An
+  invalid `--type` now fails fast when launching the `ssm://` browser instead of being
+  silently ignored.
 
 ## [1.4.0] - 2026-02-27
 

@@ -125,7 +125,7 @@ func (m *MockClient) HeadObject(_ context.Context, bucket, key string) (*ObjectM
 	defer m.mu.Unlock()
 	obj, ok := m.objects[m.key(bucket, key)]
 	if !ok {
-		return nil, fmt.Errorf("object not found: %s/%s", bucket, key)
+		return nil, notFoundErr(bucket, key)
 	}
 	meta := obj.meta
 	if meta.Metadata == nil {
