@@ -176,11 +176,12 @@ type model struct {
 	menuTarget *node // the file node the menu was opened for
 
 	// Text input state (for download dir, copy/move destination)
-	inputMode       bool
-	inputPrompt     string
-	inputText       string
-	inputAction     menuAction
-	inputCandidates []string // tab-completion candidates to list when ambiguous
+	inputMode            bool
+	inputPrompt          string
+	inputText            string
+	inputAction          menuAction
+	inputCandidates      []string // tab-completion candidates to list when ambiguous
+	inputCandidateCursor int      // highlighted candidate; -1 = none selected
 
 	// Confirm dialog state (for delete)
 	confirmMode      bool
@@ -278,6 +279,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			matches := matchingCandidates(m.inputText, msg.candidates)
 			m.inputText = completeInput(m.inputText, msg.prefix, msg.candidates)
 			m.inputCandidates = ambiguousCandidates(matches)
+			m.inputCandidateCursor = -1
 		}
 		return m, nil
 	case localTabCompleteMsg:
@@ -285,6 +287,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			matches := matchingCandidates(m.inputText, msg.candidates)
 			m.inputText = completeLocalInput(m.inputText, msg.candidates)
 			m.inputCandidates = ambiguousCandidates(matches)
+			m.inputCandidateCursor = -1
 		}
 		return m, nil
 	case actionDoneMsg:
@@ -717,11 +720,34 @@ func (m model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEscape:
+		// With a candidate list open, Esc just dismisses the list.
+		if len(m.inputCandidates) > 0 {
+			m.inputCandidates = nil
+			m.inputCandidateCursor = -1
+			return m, nil
+		}
 		m.inputMode = false
 		m.inputText = ""
-		m.inputCandidates = nil
+		return m, nil
+	case tea.KeyUp, tea.KeyLeft:
+		if len(m.inputCandidates) > 0 {
+			m.inputCandidateCursor = prevCandidate(m.inputCandidateCursor, len(m.inputCandidates))
+		}
+		return m, nil
+	case tea.KeyDown, tea.KeyRight:
+		if len(m.inputCandidates) > 0 {
+			m.inputCandidateCursor = nextCandidate(m.inputCandidateCursor, len(m.inputCandidates))
+		}
 		return m, nil
 	case tea.KeyEnter:
+		// A highlighted candidate is filled into the input first; a second
+		// Enter (with no list) confirms the action.
+		if len(m.inputCandidates) > 0 && m.inputCandidateCursor >= 0 {
+			m.inputText = m.inputCandidates[m.inputCandidateCursor]
+			m.inputCandidates = nil
+			m.inputCandidateCursor = -1
+			return m, nil
+		}
 		m.inputMode = false
 		text := m.inputText
 		m.inputText = ""
@@ -732,6 +758,7 @@ func (m model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.inputText = m.inputText[:len(m.inputText)-1]
 		}
 		m.inputCandidates = nil
+		m.inputCandidateCursor = -1
 		return m, nil
 	case tea.KeyTab:
 		if m.inputAction == menuCopy || m.inputAction == menuMove || m.inputAction == menuNewFile {
@@ -747,9 +774,26 @@ func (m model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyRunes:
 		m.inputText += string(msg.Runes)
 		m.inputCandidates = nil
+		m.inputCandidateCursor = -1
 		return m, nil
 	}
 	return m, nil
+}
+
+// nextCandidate / prevCandidate move the candidate highlight with wrap-around.
+// From the unselected state (-1) they land on the first / last entry.
+func nextCandidate(cursor, n int) int {
+	if cursor < 0 {
+		return 0
+	}
+	return (cursor + 1) % n
+}
+
+func prevCandidate(cursor, n int) int {
+	if cursor < 0 {
+		return n - 1
+	}
+	return (cursor - 1 + n) % n
 }
 
 func (m model) executeMenuAction(action menuAction) (tea.Model, tea.Cmd) {
@@ -1031,18 +1075,24 @@ func candidateLabel(c string) string {
 }
 
 // renderCandidates formats the tab-completion candidate list shown under the
-// input line, capping the count so a large directory does not flood the view.
-func renderCandidates(candidates []string) string {
+// input line, highlighting the arrow-key selection and capping the count so a
+// large directory does not flood the view.
+func renderCandidates(candidates []string, cursor int) string {
 	const max = 60
 	labels := make([]string, 0, len(candidates)+1)
 	for i, c := range candidates {
 		if i == max {
-			labels = append(labels, fmt.Sprintf("… (+%d more)", len(candidates)-max))
+			labels = append(labels, styleHelp.Render(fmt.Sprintf("… (+%d more)", len(candidates)-max)))
 			break
 		}
-		labels = append(labels, candidateLabel(c))
+		label := candidateLabel(c)
+		if i == cursor {
+			labels = append(labels, styleMenuSelected.Render(label))
+		} else {
+			labels = append(labels, styleHelp.Render(label))
+		}
 	}
-	return "  " + styleHelp.Render(strings.Join(labels, "  ")) + "\n"
+	return "  " + strings.Join(labels, "  ") + "\n"
 }
 
 // localTabComplete fires an async command to list local directory entries.
@@ -1798,7 +1848,7 @@ func (m model) View() string {
 	if m.inputMode {
 		b.WriteString("\n  " + styleInput.Render(m.inputPrompt+": "+m.inputText) + "▏\n")
 		if len(m.inputCandidates) > 0 {
-			b.WriteString(renderCandidates(m.inputCandidates))
+			b.WriteString(renderCandidates(m.inputCandidates, m.inputCandidateCursor))
 		}
 	}
 
@@ -1824,7 +1874,11 @@ func (m model) View() string {
 	} else if m.newFileChoosing {
 		help = "  ↑/↓ navigate  enter select  esc cancel"
 	} else if m.inputMode {
-		help = "  tab complete  enter confirm  esc cancel"
+		if len(m.inputCandidates) > 0 {
+			help = "  ↑/↓ ←/→ select  enter pick  esc close list"
+		} else {
+			help = "  tab complete  enter confirm  esc cancel"
+		}
 	} else {
 		help = "  ↑/↓ navigate  ←/→ collapse/expand  enter select  → menu"
 		if m.canGoUp {

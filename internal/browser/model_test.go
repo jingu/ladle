@@ -1733,6 +1733,65 @@ func TestTabCompleteListsAmbiguousCandidates(t *testing.T) {
 	}
 }
 
+// TestTabCandidateArrowSelect verifies arrow keys highlight a candidate and
+// Enter fills it into the input (a second Enter then confirms).
+func TestTabCandidateArrowSelect(t *testing.T) {
+	tmpDir := t.TempDir()
+	_ = os.Mkdir(filepath.Join(tmpDir, "Downloads"), 0755)
+	_ = os.Mkdir(filepath.Join(tmpDir, "Documents"), 0755)
+
+	input := filepath.Join(tmpDir, "Do")
+	msg := localTabComplete(input)().(localTabCompleteMsg)
+
+	m := newTestModel([]*node{{entry: entry{name: "f", key: "f"}}}, false)
+	m.inputMode = true
+	m.inputText = input
+	m.inputAction = menuDownload
+	updated, _ := m.Update(msg)
+	m = updated.(model)
+
+	if m.inputCandidateCursor != -1 {
+		t.Fatalf("expected no selection initially, got cursor %d", m.inputCandidateCursor)
+	}
+
+	// Down highlights the first candidate; Right moves to the second.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	m = updated.(model)
+	if m.inputCandidateCursor != 1 {
+		t.Fatalf("expected cursor 1 after Down+Right, got %d", m.inputCandidateCursor)
+	}
+
+	want := m.inputCandidates[1]
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(model)
+	if m.inputText != want {
+		t.Errorf("expected input filled with %q, got %q", want, m.inputText)
+	}
+	if m.inputCandidates != nil || m.inputCandidateCursor != -1 {
+		t.Errorf("expected list cleared after pick, got %v cursor %d", m.inputCandidates, m.inputCandidateCursor)
+	}
+	if !m.inputMode {
+		t.Error("expected to remain in input mode after picking a candidate")
+	}
+}
+
+func TestCandidateNavWrap(t *testing.T) {
+	if got := prevCandidate(-1, 3); got != 2 {
+		t.Errorf("prevCandidate(-1,3) = %d, want 2", got)
+	}
+	if got := nextCandidate(-1, 3); got != 0 {
+		t.Errorf("nextCandidate(-1,3) = %d, want 0", got)
+	}
+	if got := nextCandidate(2, 3); got != 0 {
+		t.Errorf("nextCandidate(2,3) = %d, want 0 (wrap)", got)
+	}
+	if got := prevCandidate(0, 3); got != 2 {
+		t.Errorf("prevCandidate(0,3) = %d, want 2 (wrap)", got)
+	}
+}
+
 func TestCandidateLabel(t *testing.T) {
 	tests := []struct{ in, want string }{
 		{"~/Downloads/", "Downloads/"},
