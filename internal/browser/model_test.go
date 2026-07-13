@@ -1703,6 +1703,50 @@ func TestLocalTabComplete(t *testing.T) {
 	}
 }
 
+// TestTabCompleteListsAmbiguousCandidates verifies that pressing tab with
+// several matching entries populates the candidate list shown under the input.
+func TestTabCompleteListsAmbiguousCandidates(t *testing.T) {
+	tmpDir := t.TempDir()
+	_ = os.Mkdir(filepath.Join(tmpDir, "Downloads"), 0755)
+	_ = os.Mkdir(filepath.Join(tmpDir, "Documents"), 0755)
+
+	input := filepath.Join(tmpDir, "Do")
+	msg := localTabComplete(input)().(localTabCompleteMsg)
+
+	nodes := []*node{{entry: entry{name: "file.txt", key: "file.txt"}}}
+	m := newTestModel(nodes, false)
+	m.inputMode = true
+	m.inputText = input
+
+	updated, _ := m.Update(msg)
+	m = updated.(model)
+
+	if len(m.inputCandidates) != 2 {
+		t.Fatalf("expected 2 candidates listed, got %d: %v", len(m.inputCandidates), m.inputCandidates)
+	}
+
+	// Typing another char clears the list.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	m = updated.(model)
+	if m.inputCandidates != nil {
+		t.Errorf("expected candidates cleared after typing, got %v", m.inputCandidates)
+	}
+}
+
+func TestCandidateLabel(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"~/Downloads/", "Downloads/"},
+		{"path/to/file.txt", "file.txt"},
+		{"file.txt", "file.txt"},
+		{"beta/", "beta/"},
+	}
+	for _, tt := range tests {
+		if got := candidateLabel(tt.in); got != tt.want {
+			t.Errorf("candidateLabel(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
 // TestLocalTabCompleteTilde verifies completion reads the expanded home
 // directory while keeping the "~" in the returned candidates so they still
 // prefix-match the user's typed input.

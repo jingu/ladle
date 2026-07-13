@@ -176,15 +176,16 @@ type model struct {
 	menuTarget *node // the file node the menu was opened for
 
 	// Text input state (for download dir, copy/move destination)
-	inputMode   bool
-	inputPrompt string
-	inputText   string
-	inputAction menuAction
+	inputMode       bool
+	inputPrompt     string
+	inputText       string
+	inputAction     menuAction
+	inputCandidates []string // tab-completion candidates to list when ambiguous
 
 	// Confirm dialog state (for delete)
-	confirmMode       bool
-	confirmPrompt     string
-	pendingDeleteKey  string
+	confirmMode      bool
+	confirmPrompt    string
+	pendingDeleteKey string
 
 	// Version mode state
 	versionMode   bool
@@ -274,12 +275,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tabCompleteMsg:
 		if m.inputMode {
+			matches := matchingCandidates(m.inputText, msg.candidates)
 			m.inputText = completeInput(m.inputText, msg.prefix, msg.candidates)
+			m.inputCandidates = ambiguousCandidates(matches)
 		}
 		return m, nil
 	case localTabCompleteMsg:
 		if m.inputMode {
+			matches := matchingCandidates(m.inputText, msg.candidates)
 			m.inputText = completeLocalInput(m.inputText, msg.candidates)
+			m.inputCandidates = ambiguousCandidates(matches)
 		}
 		return m, nil
 	case actionDoneMsg:
@@ -714,16 +719,19 @@ func (m model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEscape:
 		m.inputMode = false
 		m.inputText = ""
+		m.inputCandidates = nil
 		return m, nil
 	case tea.KeyEnter:
 		m.inputMode = false
 		text := m.inputText
 		m.inputText = ""
+		m.inputCandidates = nil
 		return m.executeInput(m.inputAction, text)
 	case tea.KeyBackspace:
 		if len(m.inputText) > 0 {
 			m.inputText = m.inputText[:len(m.inputText)-1]
 		}
+		m.inputCandidates = nil
 		return m, nil
 	case tea.KeyTab:
 		if m.inputAction == menuCopy || m.inputAction == menuMove || m.inputAction == menuNewFile {
@@ -738,6 +746,7 @@ func (m model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case tea.KeyRunes:
 		m.inputText += string(msg.Runes)
+		m.inputCandidates = nil
 		return m, nil
 	}
 	return m, nil
@@ -966,26 +975,29 @@ func (m model) tabComplete(input string) tea.Cmd {
 
 // completeInput computes the completed input text from candidates.
 func completeInput(input, dirPrefix string, candidates []string) string {
-	if len(candidates) == 0 {
-		return input
-	}
+	return completeFromMatches(input, matchingCandidates(input, candidates))
+}
 
-	// Filter candidates that match the current input as a prefix.
+// matchingCandidates returns the candidates that have input as a prefix.
+func matchingCandidates(input string, candidates []string) []string {
 	var matches []string
 	for _, c := range candidates {
 		if strings.HasPrefix(c, input) {
 			matches = append(matches, c)
 		}
 	}
+	return matches
+}
 
+// completeFromMatches extends input to the sole match, or to the longest common
+// prefix when several match. Returns input unchanged when nothing extends it.
+func completeFromMatches(input string, matches []string) string {
 	if len(matches) == 0 {
 		return input
 	}
 	if len(matches) == 1 {
 		return matches[0]
 	}
-
-	// Multiple matches: complete to longest common prefix.
 	lcp := matches[0]
 	for _, m := range matches[1:] {
 		lcp = longestCommonPrefix(lcp, m)
@@ -994,6 +1006,43 @@ func completeInput(input, dirPrefix string, candidates []string) string {
 		return lcp
 	}
 	return input
+}
+
+// ambiguousCandidates returns matches only when more than one remains, so the
+// UI lists them; a single or empty match needs no list.
+func ambiguousCandidates(matches []string) []string {
+	if len(matches) > 1 {
+		return matches
+	}
+	return nil
+}
+
+// candidateLabel returns the trailing path element of a completion candidate
+// (the part after the last "/"), keeping a trailing "/" for directories.
+func candidateLabel(c string) string {
+	trimmed := strings.TrimRight(c, "/")
+	if i := strings.LastIndexByte(trimmed, '/'); i >= 0 {
+		trimmed = trimmed[i+1:]
+	}
+	if strings.HasSuffix(c, "/") {
+		return trimmed + "/"
+	}
+	return trimmed
+}
+
+// renderCandidates formats the tab-completion candidate list shown under the
+// input line, capping the count so a large directory does not flood the view.
+func renderCandidates(candidates []string) string {
+	const max = 60
+	labels := make([]string, 0, len(candidates)+1)
+	for i, c := range candidates {
+		if i == max {
+			labels = append(labels, fmt.Sprintf("… (+%d more)", len(candidates)-max))
+			break
+		}
+		labels = append(labels, candidateLabel(c))
+	}
+	return "  " + styleHelp.Render(strings.Join(labels, "  ")) + "\n"
 }
 
 // localTabComplete fires an async command to list local directory entries.
@@ -1023,32 +1072,7 @@ func localTabComplete(input string) tea.Cmd {
 
 // completeLocalInput computes completed local path from candidates.
 func completeLocalInput(input string, candidates []string) string {
-	if len(candidates) == 0 {
-		return input
-	}
-
-	var matches []string
-	for _, c := range candidates {
-		if strings.HasPrefix(c, input) {
-			matches = append(matches, c)
-		}
-	}
-
-	if len(matches) == 0 {
-		return input
-	}
-	if len(matches) == 1 {
-		return matches[0]
-	}
-
-	lcp := matches[0]
-	for _, m := range matches[1:] {
-		lcp = longestCommonPrefix(lcp, m)
-	}
-	if len(lcp) > len(input) {
-		return lcp
-	}
-	return input
+	return completeFromMatches(input, matchingCandidates(input, candidates))
 }
 
 // longestCommonPrefix returns the longest common prefix of two strings.
@@ -1773,6 +1797,9 @@ func (m model) View() string {
 	// Input line
 	if m.inputMode {
 		b.WriteString("\n  " + styleInput.Render(m.inputPrompt+": "+m.inputText) + "▏\n")
+		if len(m.inputCandidates) > 0 {
+			b.WriteString(renderCandidates(m.inputCandidates))
+		}
 	}
 
 	// Filter line
