@@ -1703,6 +1703,24 @@ func TestLocalTabComplete(t *testing.T) {
 	}
 }
 
+// TestLocalTabCompleteTilde verifies completion reads the expanded home
+// directory while keeping the "~" in the returned candidates so they still
+// prefix-match the user's typed input.
+func TestLocalTabCompleteTilde(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	_ = os.WriteFile(filepath.Join(home, "alpha.txt"), []byte("a"), 0644)
+	_ = os.Mkdir(filepath.Join(home, "beta"), 0755)
+
+	cmd := localTabComplete("~/al")
+	msg := cmd().(localTabCompleteMsg)
+
+	completed := completeLocalInput("~/al", msg.candidates)
+	if completed != "~/alpha.txt" {
+		t.Errorf("expected %q, got %q (candidates: %v)", "~/alpha.txt", completed, msg.candidates)
+	}
+}
+
 func TestLocalTabCompleteSingleMatch(t *testing.T) {
 	tmpDir := t.TempDir()
 	_ = os.WriteFile(filepath.Join(tmpDir, "unique.txt"), []byte("a"), 0644)

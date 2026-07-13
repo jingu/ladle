@@ -21,6 +21,7 @@ import (
 	"github.com/jingu/ladle/internal/contenttype"
 	"github.com/jingu/ladle/internal/diff"
 	"github.com/jingu/ladle/internal/editor"
+	"github.com/jingu/ladle/internal/localpath"
 	"github.com/jingu/ladle/internal/meta"
 	"github.com/jingu/ladle/internal/skill"
 	"github.com/jingu/ladle/internal/spinner"
@@ -740,6 +741,7 @@ func runRestoreVersion(ctx context.Context, client storage.Client, u *uri.URI, v
 }
 
 func runDownload(ctx context.Context, client storage.Client, u *uri.URI, dir string) (string, error) {
+	dir = localpath.ExpandTilde(dir)
 	// Ensure directory exists
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", fmt.Errorf("creating directory %s: %w", dir, err)

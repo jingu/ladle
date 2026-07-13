@@ -12,6 +12,7 @@ import (
 
 	"github.com/jingu/ladle/internal/browser"
 	"github.com/jingu/ladle/internal/diff"
+	"github.com/jingu/ladle/internal/localpath"
 	"github.com/jingu/ladle/internal/spinner"
 	"github.com/jingu/ladle/internal/ssm"
 	"github.com/jingu/ladle/internal/storage"
@@ -223,6 +224,7 @@ func runSSMDownload(ctx context.Context, client ssm.Client, name, dir string, f 
 	if err != nil {
 		return "", err
 	}
+	dir = localpath.ExpandTilde(dir)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", fmt.Errorf("creating directory %s: %w", dir, err)
 	}

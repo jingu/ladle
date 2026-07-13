@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jingu/ladle/internal/apierror"
 	"github.com/jingu/ladle/internal/editor"
+	"github.com/jingu/ladle/internal/localpath"
 	"github.com/jingu/ladle/internal/storage"
 	"github.com/jingu/ladle/internal/uri"
 )
@@ -1002,7 +1003,9 @@ func localTabComplete(input string) tea.Cmd {
 		if dir == "" {
 			dir = "."
 		}
-		entries, err := os.ReadDir(dir)
+		// Read the real directory (expanding a leading ~) but keep candidates in
+		// the original form so they still prefix-match the user's typed input.
+		entries, err := os.ReadDir(localpath.ExpandTilde(dir))
 		if err != nil {
 			return localTabCompleteMsg{candidates: nil}
 		}
