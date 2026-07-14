@@ -1189,18 +1189,30 @@ func candidateLabel(c string) string {
 // large directory does not flood the view.
 func renderCandidates(candidates []string, cursor int) string {
 	const max = 60
-	labels := make([]string, 0, len(candidates)+1)
-	for i, c := range candidates {
-		if i == max {
-			labels = append(labels, styleHelp.Render(fmt.Sprintf("… (+%d more)", len(candidates)-max)))
-			break
-		}
-		label := candidateLabel(c)
+	// Slide the visible window so the highlighted candidate stays on screen even
+	// when there are more candidates than the cap.
+	start := 0
+	if cursor >= max {
+		start = cursor - max + 1
+	}
+	end := start + max
+	if end > len(candidates) {
+		end = len(candidates)
+	}
+	labels := make([]string, 0, max+2)
+	if start > 0 {
+		labels = append(labels, styleHelp.Render(fmt.Sprintf("(%d more) …", start)))
+	}
+	for i := start; i < end; i++ {
+		label := candidateLabel(candidates[i])
 		if i == cursor {
 			labels = append(labels, styleMenuSelected.Render(label))
 		} else {
 			labels = append(labels, styleHelp.Render(label))
 		}
+	}
+	if end < len(candidates) {
+		labels = append(labels, styleHelp.Render(fmt.Sprintf("… (+%d more)", len(candidates)-end)))
 	}
 	return "  " + strings.Join(labels, "  ") + "\n"
 }

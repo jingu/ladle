@@ -1934,6 +1934,33 @@ func TestInputEmacsKeys(t *testing.T) {
 	}
 }
 
+// TestRenderCandidatesWindow verifies the visible window slides to keep the
+// highlighted candidate on screen when there are more than the display cap.
+func TestRenderCandidatesWindow(t *testing.T) {
+	candidates := make([]string, 80)
+	for i := range candidates {
+		candidates[i] = fmt.Sprintf("item%02d/", i)
+	}
+
+	// Selection within the cap: window starts at 0, shows a trailing "+more".
+	within := renderCandidates(candidates, 5)
+	if !strings.Contains(within, "item05/") {
+		t.Errorf("expected selected item05 shown, got: %q", within)
+	}
+	if strings.Contains(within, "more) …") {
+		t.Errorf("did not expect a leading 'more' marker when window starts at 0: %q", within)
+	}
+
+	// Selection past the cap: window slides so item70 is visible.
+	past := renderCandidates(candidates, 70)
+	if !strings.Contains(past, "item70/") {
+		t.Errorf("expected selected item70 shown after window slide, got: %q", past)
+	}
+	if !strings.Contains(past, "more) …") {
+		t.Errorf("expected a leading 'more' marker once window has slid: %q", past)
+	}
+}
+
 func TestCandidateLabel(t *testing.T) {
 	tests := []struct{ in, want string }{
 		{"~/Downloads/", "Downloads/"},
