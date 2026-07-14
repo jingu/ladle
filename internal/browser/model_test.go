@@ -3292,6 +3292,20 @@ func TestVersionPreview_MouseWheelIgnoredWithoutPreviewPane(t *testing.T) {
 	}
 }
 
+func TestVersionPreview_MouseWheelIgnoredBeforeWindowSize(t *testing.T) {
+	m := newTestModel(nil, false)
+	m.versionMode = true
+	m.versionList = []storage.ObjectVersion{{VersionID: "v1"}}
+	m.versionTarget = &node{entry: entry{name: "file.txt", key: "file.txt"}}
+	m.previewContent = strings.Repeat("line\n", 30)
+	m.previewScroll = 3
+
+	res, _ := m.Update(tea.MouseMsg{X: 80, Y: 10, Button: tea.MouseButtonWheelDown})
+	if got := res.(model).previewScroll; got != 3 {
+		t.Errorf("unsized version view changed preview scroll to %d, want 3", got)
+	}
+}
+
 func TestBrowser_MouseWheelNavigatesLargeDirectory(t *testing.T) {
 	nodes := make([]*node, 30)
 	for i := range nodes {
@@ -3329,16 +3343,31 @@ func TestBrowser_MouseWheelNavigatesLargeDirectory(t *testing.T) {
 	}
 }
 
-func TestBrowser_MouseWheelIgnoredInFilterMode(t *testing.T) {
+func TestBrowser_MouseWheelIgnoredInTransientModes(t *testing.T) {
 	nodes := []*node{
 		{entry: entry{name: "first.txt", key: "first.txt"}},
 		{entry: entry{name: "second.txt", key: "second.txt"}},
 	}
-	m := newTestModel(nodes, false)
-	m.filtering = true
+	tests := []struct {
+		name string
+		set  func(*model)
+	}{
+		{name: "loading", set: func(m *model) { m.loading = true }},
+		{name: "confirmation", set: func(m *model) { m.confirmMode = true }},
+		{name: "input", set: func(m *model) { m.inputMode = true }},
+		{name: "menu", set: func(m *model) { m.menuOpen = true }},
+		{name: "new file choice", set: func(m *model) { m.newFileChoosing = true }},
+		{name: "filter", set: func(m *model) { m.filtering = true }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestModel(nodes, false)
+			tt.set(&m)
 
-	res, _ := m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown})
-	if got := res.(model).cursor; got != 0 {
-		t.Errorf("wheel changed cursor during filter input to %d, want 0", got)
+			res, _ := m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown})
+			if got := res.(model).cursor; got != 0 {
+				t.Errorf("wheel changed cursor to %d, want 0", got)
+			}
+		})
 	}
 }
