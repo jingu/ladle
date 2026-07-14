@@ -761,6 +761,12 @@ func (m model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.inputCandidateCursor = -1
 		return m, nil
 	case tea.KeyTab:
+		// With a candidate list already open, Tab cycles the highlight forward
+		// (same as ↓/→) so repeated Tab presses step through the candidates.
+		if len(m.inputCandidates) > 0 {
+			m.inputCandidateCursor = nextCandidate(m.inputCandidateCursor, len(m.inputCandidates))
+			return m, nil
+		}
 		if m.inputAction == menuCopy || m.inputAction == menuMove || m.inputAction == menuNewFile {
 			return m, m.tabComplete(m.inputText)
 		}
@@ -1875,7 +1881,7 @@ func (m model) View() string {
 		help = "  ↑/↓ navigate  enter select  esc cancel"
 	} else if m.inputMode {
 		if len(m.inputCandidates) > 0 {
-			help = "  ↑/↓ ←/→ select  enter pick  esc close list"
+			help = "  tab ↑/↓ ←/→ select  enter pick  esc close list"
 		} else {
 			help = "  tab complete  enter confirm  esc cancel"
 		}

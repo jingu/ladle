@@ -1777,6 +1777,50 @@ func TestTabCandidateArrowSelect(t *testing.T) {
 	}
 }
 
+// TestTabCyclesCandidates verifies that once the candidate list is open,
+// repeated Tab presses step the highlight forward (with wrap-around).
+func TestTabCyclesCandidates(t *testing.T) {
+	tmpDir := t.TempDir()
+	_ = os.Mkdir(filepath.Join(tmpDir, "Downloads"), 0755)
+	_ = os.Mkdir(filepath.Join(tmpDir, "Documents"), 0755)
+
+	input := filepath.Join(tmpDir, "Do")
+	msg := localTabComplete(input)().(localTabCompleteMsg)
+
+	m := newTestModel([]*node{{entry: entry{name: "f", key: "f"}}}, false)
+	m.inputMode = true
+	m.inputText = input
+	m.inputAction = menuDownload
+	updated, _ := m.Update(msg)
+	m = updated.(model)
+
+	if len(m.inputCandidates) != 2 {
+		t.Fatalf("expected 2 candidates, got %d", len(m.inputCandidates))
+	}
+	if m.inputCandidateCursor != -1 {
+		t.Fatalf("expected no selection initially, got cursor %d", m.inputCandidateCursor)
+	}
+
+	// First Tab (list already open) highlights candidate 0.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(model)
+	if m.inputCandidateCursor != 0 {
+		t.Fatalf("expected cursor 0 after first Tab, got %d", m.inputCandidateCursor)
+	}
+	// Second Tab → candidate 1.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(model)
+	if m.inputCandidateCursor != 1 {
+		t.Fatalf("expected cursor 1 after second Tab, got %d", m.inputCandidateCursor)
+	}
+	// Third Tab wraps back to 0.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(model)
+	if m.inputCandidateCursor != 0 {
+		t.Fatalf("expected cursor 0 after wrap, got %d", m.inputCandidateCursor)
+	}
+}
+
 func TestCandidateNavWrap(t *testing.T) {
 	if got := prevCandidate(-1, 3); got != 2 {
 		t.Errorf("prevCandidate(-1,3) = %d, want 2", got)
