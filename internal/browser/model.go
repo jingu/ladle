@@ -1954,8 +1954,8 @@ func (m model) View() string {
 		b.WriteString("\n  " + styleInput.Render(m.confirmPrompt) + "\n")
 	}
 
-	// Input line. The caret "▏" is drawn at inputCursor, splitting the text into
-	// the styled runs before and after it.
+	// Input line. A block caret (reverse video + blink) covers the character
+	// under inputCursor; at end-of-line it covers a trailing space.
 	if m.inputMode {
 		runes := []rune(m.inputText)
 		cur := m.inputCursor
@@ -1963,8 +1963,16 @@ func (m model) View() string {
 			cur = len(runes)
 		}
 		before := string(runes[:cur])
-		after := string(runes[cur:])
-		b.WriteString("\n  " + styleInput.Render(m.inputPrompt+": "+before) + "▏" + styleInput.Render(after) + "\n")
+		caretCh := " "
+		after := ""
+		if cur < len(runes) {
+			caretCh = string(runes[cur])
+			after = string(runes[cur+1:])
+		}
+		line := styleInput.Render(m.inputPrompt+": "+before) +
+			styleInputCursor.Render(caretCh) +
+			styleInput.Render(after)
+		b.WriteString("\n  " + line + "\n")
 		if len(m.inputCandidates) > 0 {
 			b.WriteString(renderCandidates(m.inputCandidates, m.inputCandidateCursor))
 		}
