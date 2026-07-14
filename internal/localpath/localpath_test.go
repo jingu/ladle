@@ -7,7 +7,8 @@ import (
 
 func TestExpandTilde(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	t.Setenv("HOME", home)        // POSIX
+	t.Setenv("USERPROFILE", home) // Windows
 
 	tests := []struct {
 		name  string

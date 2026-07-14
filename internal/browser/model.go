@@ -1224,6 +1224,11 @@ func localTabComplete(input string) tea.Cmd {
 		if dir == "" {
 			dir = "."
 		}
+		// A bare "~" has no trailing slash, so filepath.Dir yields ".";
+		// treat it as the home directory so its entries are listed.
+		if input == "~" {
+			dir = "~"
+		}
 		// Read the real directory (expanding a leading ~) but keep candidates in
 		// the original form so they still prefix-match the user's typed input.
 		entries, err := os.ReadDir(localpath.ExpandTilde(dir))
