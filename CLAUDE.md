@@ -129,3 +129,8 @@ go build -ldflags "-X main.version=1.0.0" ./cmd/ladle/
 ```
 
 Default is `dev`.
+
+## Pull Request Descriptions
+
+Write PR overview sections in Japanese and English. Use a bilingual heading such as
+`## 概要 / Summary`, and state each substantive change in both languages.
