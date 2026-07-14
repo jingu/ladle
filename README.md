@@ -149,12 +149,13 @@ $ ladle s3://myapp/
   ..
 
   / index▏
-  ↑/↓ navigate  ←/→ collapse/expand  enter select  - up  n new  / filter  esc×2 quit
+  ↑/↓ or wheel navigate  ←/→ collapse/expand  enter select  space preview  → menu  - up  n new  / filter  esc×2 quit
 ```
 
-- `↑/↓` navigate, `←/→` expand/collapse directories
+- `↑/↓` or the mouse wheel / trackpad to navigate entries; `←/→` expand/collapse directories
 - `/` to filter — incremental search across expanded tree
 - `Enter` to edit a file, then return to the browser
+- `Space` on a file to open a QuickLook-style preview (scroll with the mouse wheel or trackpad, `↑/↓`, `C-d`/`C-u`, `g`/`G`; `Space`/`esc`/`q` to close). Binary files and files over 512KB are not rendered.
 - `→` on a file to open the context menu
 - `-` to go up a directory
 - `n` to create a new file in the current directory (opens your editor on an empty buffer). For `ssm://`, an arrow-key popup lets you pick the parameter type (String / StringList / SecureString) first, defaulting to `--type`.
@@ -227,10 +228,10 @@ ladle --versions s3://myapp/config.json
   │                                      │  │                                  │
   ╰──────────────────────────────────────╯  ╰──────────────────────────────────╯
 
-  ↑/↓ navigate  enter restore  ctrl-d/u scroll preview  esc back  esc×2 quit
+  ↑/↓ navigate  wheel in Preview scroll  ctrl-d/u scroll preview  enter restore  esc back  esc×2 quit
 ```
 
-The version view shows a list of versions on the left with a content preview on the right. Use `↑/↓` to navigate versions, `Ctrl-d/Ctrl-u` to scroll the preview, and `Enter` to restore a selected version.
+The version view shows a list of versions on the left with a content preview on the right. Use `↑/↓` to navigate versions, the mouse wheel or trackpad over the **Preview** pane (or `Ctrl-d/Ctrl-u`) to scroll it, and `Enter` to restore a selected version.
 
 You can also access version history from the browser's context menu by selecting **Versions** on any file.
 

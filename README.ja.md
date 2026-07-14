@@ -149,12 +149,13 @@ $ ladle s3://myapp/
   ..
 
   / index▏
-  ↑/↓ navigate  ←/→ collapse/expand  enter select  - up  n new  / filter  esc×2 quit
+  ↑/↓ or wheel navigate  ←/→ collapse/expand  enter select  space preview  → menu  - up  n new  / filter  esc×2 quit
 ```
 
-- `↑/↓` で移動、`←/→` でディレクトリの展開/折りたたみ
+- `↑/↓` またはマウスホイール／トラックパッドでエントリを移動、`←/→` でディレクトリの展開/折りたたみ
 - `/` でフィルタ — 展開済みツリー全体をインクリメンタル検索
 - `Enter` でファイルを編集、完了後ブラウザに戻る
+- ファイル上で `Space` を押すと QuickLook 風のプレビューが開く（マウスホイール／トラックパッド、`↑/↓`・`C-d`/`C-u`・`g`/`G` でスクロール、`Space`/`esc`/`q` で閉じる）。バイナリと 512KB を超えるファイルは表示しません。
 - ファイル上で `→` でコンテキストメニューを開く
 - `-` で上のディレクトリへ
 - `n` で現在のディレクトリに新規ファイルを作成（空のバッファでエディタが開く）。`ssm://` では先に上下キーのポップアップでパラメータ型（String / StringList / SecureString）を選択します（既定は `--type`）。
@@ -227,10 +228,10 @@ ladle --versions s3://myapp/config.json
   │                                      │  │                                  │
   ╰──────────────────────────────────────╯  ╰──────────────────────────────────╯
 
-  ↑/↓ navigate  enter restore  ctrl-d/u scroll preview  esc back  esc×2 quit
+  ↑/↓ navigate  wheel in Preview scroll  ctrl-d/u scroll preview  enter restore  esc back  esc×2 quit
 ```
 
-バージョンビューでは左側にバージョン一覧、右側にコンテンツのプレビューが表示されます。`↑/↓` でバージョンを選択、`Ctrl-d/Ctrl-u` でプレビューをスクロール、`Enter` で選択したバージョンに復元できます。
+バージョンビューでは左側にバージョン一覧、右側にコンテンツのプレビューが表示されます。`↑/↓` でバージョンを選択し、右側の **Preview** ペイン上でマウスホイール／トラックパッド（または `Ctrl-d/Ctrl-u`）を使うとプレビューをスクロールできます。`Enter` で選択したバージョンに復元します。
 
 ブラウザのコンテキストメニューから **Versions** を選択してアクセスすることもできます。
 

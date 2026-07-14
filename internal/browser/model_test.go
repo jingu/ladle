@@ -2998,3 +2998,347 @@ func TestNewFileCommandPassesChoice(t *testing.T) {
 		t.Errorf("message = %q, want ok", c.message)
 	}
 }
+
+// newPreviewModel builds a model wired to the given mock so preview fetches hit
+// seeded content.
+func newPreviewModel(mock *storage.MockClient, nodes []*node) model {
+	u, _ := uri.Parse("s3://test/")
+	b := New(mock, u, nil, nil, "test")
+	return model{
+		nodes:   nodes,
+		client:  mock,
+		ctx:     context.Background(),
+		bucket:  "test",
+		scheme:  "s3",
+		browser: b,
+		editFn:  func(u *uri.URI) (string, error) { return "", nil },
+	}
+}
+
+func TestFilePreview_SpaceOpensAndLoadsContent(t *testing.T) {
+	mock := storage.NewMockClient()
+	mock.PutObject("test", "file.txt", []byte("hello\nworld"), nil)
+	nodes := []*node{{entry: entry{name: "file.txt", key: "file.txt", size: 11}}}
+	m := newPreviewModel(mock, nodes)
+
+	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	rm := res.(model)
+	if !rm.previewMode {
+		t.Fatal("space should open the preview overlay")
+	}
+	if rm.previewKey != "file.txt" || rm.previewName != "file.txt" {
+		t.Errorf("preview target: key=%q name=%q", rm.previewKey, rm.previewName)
+	}
+	if !rm.previewLoading {
+		t.Error("should be loading after opening")
+	}
+	if cmd == nil {
+		t.Fatal("expected an async load command")
+	}
+
+	// Run the async load and feed its message back.
+	res2, _ := rm.Update(cmd())
+	rm2 := res2.(model)
+	if rm2.previewLoading {
+		t.Error("should not be loading after content arrives")
+	}
+	if rm2.previewContent != "hello\nworld" {
+		t.Errorf("previewContent: got %q", rm2.previewContent)
+	}
+	if rm2.previewError != "" {
+		t.Errorf("previewError: got %q", rm2.previewError)
+	}
+}
+
+func TestFilePreview_StaleRequestIsIgnoredAfterReopen(t *testing.T) {
+	nodes := []*node{{entry: entry{name: "file.txt", key: "file.txt"}}}
+	m := newTestModel(nodes, false)
+
+	res, _ := m.openPreview(nodes[0])
+	first := res.(model)
+	firstRequestID := first.previewRequestID
+
+	res, _ = first.handlePreviewKey(tea.KeyMsg{Type: tea.KeySpace})
+	closed := res.(model)
+	res, _ = closed.openPreview(nodes[0])
+	reopened := res.(model)
+	if reopened.previewRequestID == firstRequestID {
+		t.Fatal("reopening a preview should create a new request ID")
+	}
+
+	res, _ = reopened.Update(filePreviewMsg{
+		key:       "file.txt",
+		requestID: firstRequestID,
+		content:   "stale",
+	})
+	stillLoading := res.(model)
+	if !stillLoading.previewLoading || stillLoading.previewContent != "" {
+		t.Errorf("stale result changed active preview: loading=%t content=%q", stillLoading.previewLoading, stillLoading.previewContent)
+	}
+
+	res, _ = stillLoading.Update(filePreviewMsg{
+		key:       "file.txt",
+		requestID: reopened.previewRequestID,
+		content:   "current",
+	})
+	current := res.(model)
+	if current.previewLoading || current.previewContent != "current" {
+		t.Errorf("current result not applied: loading=%t content=%q", current.previewLoading, current.previewContent)
+	}
+}
+
+func TestFilePreview_SpaceClosesOverlay(t *testing.T) {
+	nodes := []*node{{entry: entry{name: "file.txt", key: "file.txt"}}}
+	m := newTestModel(nodes, false)
+	m.previewMode = true
+	m.previewKey = "file.txt"
+	m.previewContent = "data"
+
+	res, _ := m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	rm := res.(model)
+	if rm.previewMode {
+		t.Error("space should close the preview overlay")
+	}
+	if rm.previewContent != "" || rm.previewKey != "" {
+		t.Errorf("preview state should be cleared: content=%q key=%q", rm.previewContent, rm.previewKey)
+	}
+}
+
+func TestFilePreview_SpaceIgnoredOnDirectory(t *testing.T) {
+	nodes := []*node{{entry: entry{name: "dir", key: "dir/", isDir: true}}}
+	m := newTestModel(nodes, false)
+
+	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	rm := res.(model)
+	if rm.previewMode {
+		t.Error("space on a directory should not open preview")
+	}
+	if cmd != nil {
+		t.Error("no command expected for a directory")
+	}
+}
+
+func TestFilePreview_TooLargeRefusedWithoutFetch(t *testing.T) {
+	nodes := []*node{{entry: entry{name: "big.txt", key: "big.txt", size: previewMaxBytes + 1}}}
+	m := newTestModel(nodes, false)
+
+	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	rm := res.(model)
+	if !rm.previewMode {
+		t.Fatal("overlay should still open to show the message")
+	}
+	if rm.previewLoading {
+		t.Error("should not load an oversized file")
+	}
+	if cmd != nil {
+		t.Error("no download command expected for an oversized file")
+	}
+	if !strings.Contains(rm.previewError, "too large") {
+		t.Errorf("previewError: got %q, want a too-large message", rm.previewError)
+	}
+}
+
+func TestFilePreview_BinaryRefused(t *testing.T) {
+	mock := storage.NewMockClient()
+	mock.PutObject("test", "bin", []byte{0x00, 0x01, 0x02, 0x03}, nil)
+	nodes := []*node{{entry: entry{name: "bin", key: "bin", size: 4}}}
+	m := newPreviewModel(mock, nodes)
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	if cmd == nil {
+		t.Fatal("expected a load command")
+	}
+	msg, ok := cmd().(filePreviewMsg)
+	if !ok {
+		t.Fatalf("expected filePreviewMsg, got %T", cmd())
+	}
+	if msg.err == nil || !strings.Contains(msg.err.Error(), "binary") {
+		t.Errorf("expected a binary refusal, got err=%v content=%q", msg.err, msg.content)
+	}
+}
+
+func TestFilePreview_MouseWheelScrollsOnlyOpenPreview(t *testing.T) {
+	m := newTestModel(nil, false)
+	m.termHeight = 20
+	m.previewMode = true
+	m.previewContent = strings.Repeat("line\n", 30)
+	m.previewScroll = 3
+
+	res, _ := m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelUp})
+	rm := res.(model)
+	if rm.previewScroll != 2 {
+		t.Errorf("wheel up scroll = %d, want 2", rm.previewScroll)
+	}
+
+	res, _ = rm.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown})
+	rm = res.(model)
+	if rm.previewScroll != 3 {
+		t.Errorf("wheel down scroll = %d, want 3", rm.previewScroll)
+	}
+
+	rm.previewMode = false
+	res, _ = rm.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown})
+	if got := res.(model).previewScroll; got != 3 {
+		t.Errorf("wheel outside preview changed scroll to %d, want 3", got)
+	}
+}
+
+func TestFilePreview_MouseWheelClampsAtBounds(t *testing.T) {
+	m := newTestModel(nil, false)
+	m.termHeight = 20
+	m.previewMode = true
+	m.previewContent = strings.Repeat("line\n", 30)
+
+	res, _ := m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelUp})
+	if got := res.(model).previewScroll; got != 0 {
+		t.Errorf("wheel up from top = %d, want 0", got)
+	}
+
+	m.previewScroll = 100
+	res, _ = m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown})
+	rm := res.(model)
+	want := strings.Count(m.previewContent, "\n") + 1 - m.filePreviewContentHeight()
+	if got := rm.previewScroll; got != want {
+		t.Errorf("wheel down clamp = %d, want %d", got, want)
+	}
+}
+
+func TestVersionPreview_MouseWheelScrollsOnlyRenderedPreviewPane(t *testing.T) {
+	m := newTestModel(nil, false)
+	m.termWidth = 100
+	m.termHeight = 30
+	m.versionMode = true
+	m.versionList = []storage.ObjectVersion{{VersionID: "v1"}}
+	m.versionTarget = &node{entry: entry{name: "file.txt", key: "file.txt"}}
+	m.previewContent = strings.Repeat("line\n", 30)
+	m.previewScroll = 3
+
+	view := m.View()
+	if !strings.Contains(view, "Preview") {
+		t.Fatal("test fixture must render the version Preview pane")
+	}
+	xMin, xMax, yMin, yMax, ok := m.versionPreviewBounds()
+	if !ok {
+		t.Fatal("expected bounds for the rendered Preview pane")
+	}
+	if xMin != 44 || xMax != 100 {
+		t.Errorf("preview x bounds = [%d, %d), want [44, 100)", xMin, xMax)
+	}
+	if yMin <= 0 || yMax <= yMin {
+		t.Errorf("invalid preview y bounds = [%d, %d)", yMin, yMax)
+	}
+	renderedLines := strings.Split(view, "\n")
+	if yMin+1 >= len(renderedLines) || !strings.Contains(renderedLines[yMin+1], "Preview") {
+		t.Fatalf("preview bounds y=%d do not point to the rendered pane", yMin)
+	}
+
+	res, _ := m.Update(tea.MouseMsg{X: xMin, Y: yMin, Button: tea.MouseButtonWheelUp})
+	rm := res.(model)
+	if rm.previewScroll != 2 {
+		t.Errorf("preview-pane wheel up scroll = %d, want 2", rm.previewScroll)
+	}
+	if rm.versionCursor != 0 {
+		t.Errorf("preview-pane wheel changed version cursor to %d, want 0", rm.versionCursor)
+	}
+
+	for _, outside := range []tea.MouseMsg{
+		{X: xMin - 1, Y: yMin, Button: tea.MouseButtonWheelDown}, // inter-pane gap
+		{X: xMin, Y: yMin - 1, Button: tea.MouseButtonWheelDown}, // above pane
+		{X: xMax, Y: yMin, Button: tea.MouseButtonWheelDown},     // right of pane
+	} {
+		res, _ = rm.Update(outside)
+		rm = res.(model)
+	}
+	if rm.previewScroll != 2 {
+		t.Errorf("wheel outside Preview changed scroll to %d, want 2", rm.previewScroll)
+	}
+	if rm.versionCursor != 0 {
+		t.Errorf("wheel outside Preview changed version cursor to %d, want 0", rm.versionCursor)
+	}
+}
+
+func TestVersionPreviewBoundsAccountForWrappedPrelude(t *testing.T) {
+	m := newTestModel(nil, false)
+	m.termWidth = 100
+	m.termHeight = 30
+	m.header = strings.Repeat("x", 100)
+	m.versionMode = true
+	m.versionList = []storage.ObjectVersion{{VersionID: "v1"}}
+	m.versionTarget = &node{entry: entry{name: "file.txt", key: "file.txt"}}
+
+	_, _, yMin, _, ok := m.versionPreviewBounds()
+	if !ok {
+		t.Fatal("expected bounds for the rendered Preview pane")
+	}
+	// The two-space path prefix plus 100 characters wraps once at 100 cells.
+	if yMin != 11 {
+		t.Errorf("wrapped prelude yMin = %d, want 11", yMin)
+	}
+}
+
+func TestVersionPreview_MouseWheelIgnoredWithoutPreviewPane(t *testing.T) {
+	m := newTestModel(nil, false)
+	m.termWidth = 59
+	m.termHeight = 30
+	m.versionMode = true
+	m.versionList = []storage.ObjectVersion{{VersionID: "v1"}}
+	m.versionTarget = &node{entry: entry{name: "file.txt", key: "file.txt"}}
+	m.previewContent = strings.Repeat("line\n", 30)
+	m.previewScroll = 3
+
+	res, _ := m.Update(tea.MouseMsg{X: 58, Y: 10, Button: tea.MouseButtonWheelDown})
+	if got := res.(model).previewScroll; got != 3 {
+		t.Errorf("narrow version view changed preview scroll to %d, want 3", got)
+	}
+}
+
+func TestBrowser_MouseWheelNavigatesLargeDirectory(t *testing.T) {
+	nodes := make([]*node, 30)
+	for i := range nodes {
+		name := fmt.Sprintf("file-%02d.txt", i)
+		nodes[i] = &node{entry: entry{name: name, key: name}}
+	}
+	m := newTestModel(nodes, false)
+	m.termHeight = 20
+
+	for range 20 {
+		res, _ := m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown})
+		m = res.(model)
+	}
+	if m.cursor != 20 {
+		t.Fatalf("cursor after scrolling down = %d, want 20", m.cursor)
+	}
+	if !strings.Contains(m.View(), "file-20.txt") {
+		t.Error("viewport should follow the wheel-selected entry")
+	}
+
+	for range 20 {
+		res, _ := m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelUp})
+		m = res.(model)
+	}
+	if m.cursor != 0 {
+		t.Errorf("cursor after scrolling back up = %d, want 0", m.cursor)
+	}
+
+	for range 40 {
+		res, _ := m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown})
+		m = res.(model)
+	}
+	if m.cursor != len(nodes)-1 {
+		t.Errorf("cursor should clamp at last entry: got %d, want %d", m.cursor, len(nodes)-1)
+	}
+}
+
+func TestBrowser_MouseWheelIgnoredInFilterMode(t *testing.T) {
+	nodes := []*node{
+		{entry: entry{name: "first.txt", key: "first.txt"}},
+		{entry: entry{name: "second.txt", key: "second.txt"}},
+	}
+	m := newTestModel(nodes, false)
+	m.filtering = true
+
+	res, _ := m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown})
+	if got := res.(model).cursor; got != 0 {
+		t.Errorf("wheel changed cursor during filter input to %d, want 0", got)
+	}
+}

@@ -12,6 +12,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/jingu/ladle/internal/apierror"
 	"github.com/jingu/ladle/internal/editor"
 	"github.com/jingu/ladle/internal/localpath"
@@ -19,7 +20,11 @@ import (
 	"github.com/jingu/ladle/internal/uri"
 )
 
-const previewMaxBytes = 512 * 1024 // 512KB
+const (
+	previewMaxBytes    = 512 * 1024 // 512KB
+	browserHeaderLines = 9
+	browserFooterLines = 3
+)
 
 // entry represents a single item in the tree.
 type entry struct {
@@ -117,6 +122,14 @@ type versionPreviewMsg struct {
 	err       error
 }
 
+// filePreviewMsg carries downloaded file content for the QuickLook preview.
+type filePreviewMsg struct {
+	key       string
+	requestID uint64
+	content   string
+	err       error
+}
+
 // navigatedMsg is sent after navigation (goUp / bucket select) rebuilds the view.
 type navigatedMsg struct {
 	nodes   []*node
@@ -202,6 +215,14 @@ type model struct {
 	previewLoading bool
 	previewError   string
 
+	// QuickLook file preview state (Space on a file). Reuses previewContent/
+	// previewScroll/previewLoading/previewError, which are otherwise only used
+	// in version mode; the two modes are mutually exclusive.
+	previewMode      bool
+	previewKey       string // full object key being previewed
+	previewName      string // display name shown in the pane header
+	previewRequestID uint64 // increments for every open to discard stale downloads
+
 	initVersionKey string // set by --versions flag; triggers version loading on Init()
 
 	quitting     bool
@@ -246,6 +267,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.message = "" // clear message on any key
 		m.messageIsError = false
 		return m.handleKey(msg)
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
 	case childrenLoadedMsg:
 		return m.handleChildrenLoaded(msg)
 	case editDoneMsg:
@@ -320,6 +343,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.previewScroll = 0
 		return m, nil
+	case filePreviewMsg:
+		if !m.previewMode || msg.requestID != m.previewRequestID {
+			return m, nil
+		}
+		m.previewLoading = false
+		if msg.err != nil {
+			m.previewError = msg.err.Error()
+			m.previewContent = ""
+		} else {
+			m.previewContent = msg.content
+			m.previewError = ""
+		}
+		m.previewScroll = 0
+		return m, nil
 	case versionsLoadedMsg:
 		m.loading = false
 		if msg.err != nil {
@@ -373,6 +410,11 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Version mode handling
 	if m.versionMode {
 		return m.handleVersionKey(msg)
+	}
+
+	// QuickLook preview overlay handling
+	if m.previewMode {
+		return m.handlePreviewKey(msg)
 	}
 
 	// Confirm dialog handling (delete confirmation)
@@ -517,6 +559,13 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.filterText = ""
 	case "n":
 		return m.startNewFile()
+	case " ":
+		if len(visible) > 0 {
+			n := visible[m.cursor]
+			if n != nil && !n.entry.isDir && !n.entry.isBucket {
+				return m.openPreview(n)
+			}
+		}
 	case "ctrl+c":
 		m.quitting = true
 		return m, tea.Quit
@@ -1426,6 +1475,9 @@ func (m model) handleVersionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // previewPageSize returns the number of visible content lines in the preview pane.
 // Matches the right pane's content area (version list visible items).
 func (m model) previewPageSize() int {
+	if m.previewMode {
+		return m.filePreviewContentHeight()
+	}
 	h := m.versionPaneHeight()
 	if h < 1 {
 		return 1
@@ -1503,6 +1555,249 @@ func (m model) loadVersions(key string) tea.Cmd {
 		versions, err := client.ListVersions(ctx, bucket, key)
 		return versionsLoadedMsg{versions: versions, err: err}
 	}
+}
+
+// headerArt returns the ASCII logo header shared by the tree and preview views.
+func (m model) headerArt() string {
+	var b strings.Builder
+	b.WriteString("\n")
+	b.WriteString("      ██  _   ___  _    ____\n")
+	b.WriteString("     ██  /_\\ | _ \\| |  | __|\n")
+	b.WriteString("  ▄▄██▄ / _ \\| | || |__| _|\n")
+	b.WriteString("  ██████_/ \\_\\___/|____|____|\n")
+	b.WriteString("   ▀██▀  " + styleMeta.Render(m.version) + "\n")
+	b.WriteString("\n")
+	return b.String()
+}
+
+// openPreview opens the QuickLook-style preview overlay for a file node. Large
+// files are refused up front (no download); binary files are refused after the
+// content sniff in loadFilePreview.
+func (m model) openPreview(n *node) (tea.Model, tea.Cmd) {
+	m.previewMode = true
+	m.previewKey = n.entry.key
+	m.previewName = n.entry.name
+	m.previewScroll = 0
+	m.previewContent = ""
+	m.previewError = ""
+	m.previewVersion = "" // avoid a stale version-preview dedup match
+	m.previewRequestID++
+	if n.entry.size > previewMaxBytes {
+		m.previewLoading = false
+		m.previewError = "File too large to preview (>512KB)"
+		return m, nil
+	}
+	m.previewLoading = true
+	return m, m.loadFilePreview(n.entry.key, m.previewRequestID)
+}
+
+// loadFilePreview downloads the current object body for the preview overlay.
+// Binary content is refused; oversized files are already screened by openPreview.
+func (m model) loadFilePreview(key string, requestID uint64) tea.Cmd {
+	client := m.client
+	ctx := m.ctx
+	bucket := m.bucket
+	return func() tea.Msg {
+		var buf bytes.Buffer
+		if err := client.Download(ctx, bucket, key, &buf); err != nil {
+			return filePreviewMsg{key: key, requestID: requestID, err: err}
+		}
+		data := buf.Bytes()
+		if editor.IsBinary(data) {
+			return filePreviewMsg{key: key, requestID: requestID, err: fmt.Errorf("binary file — no preview")}
+		}
+		return filePreviewMsg{key: key, requestID: requestID, content: string(data)}
+	}
+}
+
+// handlePreviewKey handles keys while the QuickLook preview overlay is open.
+func (m model) handlePreviewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q", " ":
+		m.previewMode = false
+		m.previewKey = ""
+		m.previewName = ""
+		m.previewContent = ""
+		m.previewError = ""
+		m.previewLoading = false
+		m.previewScroll = 0
+		return m, nil
+	case "ctrl+c":
+		m.quitting = true
+		return m, tea.Quit
+	case "up", "k", "ctrl+p":
+		m.previewScroll--
+		m.clampPreviewScroll()
+	case "down", "j", "ctrl+n":
+		m.previewScroll++
+		m.clampPreviewScroll()
+	case "ctrl+u", "pgup":
+		m.previewScroll -= m.previewPageSize()
+		m.clampPreviewScroll()
+	case "ctrl+d", "pgdown":
+		m.previewScroll += m.previewPageSize()
+		m.clampPreviewScroll()
+	case "g", "home":
+		m.previewScroll = 0
+	case "G", "end":
+		m.previewScroll = strings.Count(m.previewContent, "\n") + 1
+		m.clampPreviewScroll()
+	}
+	return m, nil
+}
+
+// handleMouse scrolls text previews or navigates the browser list from
+// mouse-wheel and trackpad events. In version mode, scrolling only works over
+// the right-side preview pane so the version list remains unaffected.
+func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if m.previewMode {
+		return m.scrollPreviewWheel(msg)
+	}
+	if m.versionMode {
+		if !m.mouseOverVersionPreview(msg) {
+			return m, nil
+		}
+		return m.scrollPreviewWheel(msg)
+	}
+	if m.loading || m.confirmMode || m.inputMode || m.menuOpen || m.newFileChoosing || m.filtering {
+		return m, nil
+	}
+	return m.scrollBrowserWheel(msg)
+}
+
+// mouseOverVersionPreview reports whether a mouse event falls inside the
+// rendered right-side Preview pane of the version view.
+func (m model) mouseOverVersionPreview(msg tea.MouseMsg) bool {
+	xMin, xMax, yMin, yMax, ok := m.versionPreviewBounds()
+	return ok && msg.X >= xMin && msg.X < xMax && msg.Y >= yMin && msg.Y < yMax
+}
+
+// versionPreviewBounds returns the outer terminal-cell rectangle occupied by
+// the right Preview pane. It returns false until terminal dimensions are known,
+// or while another overlay obscures the version view.
+func (m model) versionPreviewBounds() (xMin, xMax, yMin, yMax int, ok bool) {
+	if m.termWidth <= 0 || m.termHeight <= 0 || len(m.versionList) == 0 ||
+		m.menuOpen || m.newFileChoosing || m.confirmMode || m.inputMode || m.filtering {
+		return 0, 0, 0, 0, false
+	}
+
+	leftWidth, rightWidth, hasPreview := m.versionPaneWidths()
+	if !hasPreview {
+		return 0, 0, 0, 0, false
+	}
+
+	prelude := m.renderVersionPrelude()
+	yMin = strings.Count(ansi.Hardwrap(prelude, m.termWidth, true), "\n") + 1 // pane's preceding blank line
+
+	xMin = leftWidth + 4 // left border (2) plus the two-cell JoinHorizontal gap
+	xMax = xMin + rightWidth + 2
+	yMax = yMin + lipgloss.Height(m.renderVersionPane())
+	return xMin, xMax, yMin, yMax, true
+}
+
+// scrollPreviewWheel changes previewScroll for one vertical wheel tick.
+func (m model) scrollPreviewWheel(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if m.previewLoading {
+		return m, nil
+	}
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		m.previewScroll--
+	case tea.MouseButtonWheelDown:
+		m.previewScroll++
+	default:
+		return m, nil
+	}
+	m.clampPreviewScroll()
+	return m, nil
+}
+
+// scrollBrowserWheel moves the tree cursor one visible entry for each vertical
+// wheel tick. View keeps that cursor centered in the list viewport, so this
+// also scrolls directories that contain more entries than fit on screen.
+func (m model) scrollBrowserWheel(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	visible := m.visibleNodes()
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		if m.cursor > 0 {
+			m.cursor--
+		}
+	case tea.MouseButtonWheelDown:
+		if m.cursor < len(visible)-1 {
+			m.cursor++
+		}
+	default:
+		return m, nil
+	}
+	return m, nil
+}
+
+// filePreviewContentHeight returns the number of content lines shown in the
+// full-width QuickLook preview pane (used for scrolling and paging).
+func (m model) filePreviewContentHeight() int {
+	// header art(7) + title+blank(2) + border(2) + blank+help(2) = 13 overhead.
+	const overhead = 13
+	if m.termHeight <= 0 {
+		return 20
+	}
+	h := m.termHeight - overhead
+	if h < 3 {
+		h = 3
+	}
+	return h
+}
+
+// previewView renders the full-width QuickLook preview overlay.
+func (m model) previewView() string {
+	var b strings.Builder
+	b.WriteString(m.headerArt())
+	b.WriteString("  " + styleHeader.Render("Preview: "+m.previewName) + "\n\n")
+
+	contentHeight := m.filePreviewContentHeight()
+	width := m.termWidth - 4
+	if width < 20 {
+		width = 20
+	}
+
+	var body strings.Builder
+	switch {
+	case m.previewLoading:
+		body.WriteString(styleMeta.Render("Loading..."))
+	case m.previewError != "":
+		body.WriteString(styleMessageError.Render(m.previewError))
+	case m.previewContent == "":
+		body.WriteString(styleMeta.Render("(empty file)"))
+	default:
+		lines := strings.Split(m.previewContent, "\n")
+		start := m.previewScroll
+		if start > len(lines) {
+			start = len(lines)
+		}
+		show := contentHeight
+		if start+show < len(lines) {
+			show-- // reserve a line for the "more below" indicator
+		}
+		end := start + show
+		if end > len(lines) {
+			end = len(lines)
+		}
+		for i := start; i < end; i++ {
+			line := lines[i]
+			r := []rune(line)
+			if len(r) > width {
+				line = string(r[:width])
+			}
+			body.WriteString(line + "\n")
+		}
+		if end < len(lines) {
+			body.WriteString(styleMeta.Render(fmt.Sprintf("(%d more lines below — C-d/C-u to scroll)", len(lines)-end)))
+		}
+	}
+
+	b.WriteString(stylePreviewBorder.Width(width).Render(body.String()))
+	b.WriteString("\n\n")
+	b.WriteString(styleHelp.Render("  ↑/↓ or wheel scroll  C-d/C-u page  g/G top/bottom  space/esc/q close") + "\n")
+	return b.String()
 }
 
 // restoreVersionCommand implements tea.ExecCommand to run the restore workflow
@@ -1708,6 +2003,130 @@ func (m model) visibleNodes() []*node {
 	return visible
 }
 
+// listVisibleRange returns the tree indices rendered by View.
+func (m model) listVisibleRange(visible []*node) (startIdx, endIdx int) {
+	listHeight := len(visible)
+	endIdx = listHeight
+	if m.termHeight <= 0 {
+		return startIdx, endIdx
+	}
+
+	maxItems := m.termHeight - browserHeaderLines - browserFooterLines
+	if m.message != "" {
+		maxItems -= 2 // message line + blank
+	}
+	if maxItems < 1 {
+		maxItems = 1
+	}
+	if listHeight <= maxItems {
+		return startIdx, endIdx
+	}
+
+	half := maxItems / 2
+	startIdx = m.cursor - half
+	if startIdx < 0 {
+		startIdx = 0
+	}
+	endIdx = startIdx + maxItems
+	if endIdx > listHeight {
+		endIdx = listHeight
+		startIdx = endIdx - maxItems
+	}
+	return startIdx, endIdx
+}
+
+// renderVersionPrelude returns exactly the output emitted before version panes.
+func (m model) renderVersionPrelude() string {
+	visible := m.visibleNodes()
+	startIdx, endIdx := m.listVisibleRange(visible)
+
+	var b strings.Builder
+	b.WriteString(m.headerArt())
+	b.WriteString("  " + styleHeader.Render(m.header) + "\n\n")
+	b.WriteString(m.renderTreeList(visible, startIdx, endIdx))
+	b.WriteString(m.renderMessage())
+	return b.String()
+}
+
+// renderTreeList renders the currently visible slice of the browser tree.
+func (m model) renderTreeList(visible []*node, startIdx, endIdx int) string {
+	const iconDisplayWidth = 2
+	maxNameWidth := 0
+	for i := startIdx; i < endIdx; i++ {
+		n := visible[i]
+		if n == nil || n.entry.isDir || n.entry.isBucket {
+			continue
+		}
+		w := n.depth*4 + iconDisplayWidth + 1 + len(n.entry.name)
+		if w > maxNameWidth {
+			maxNameWidth = w
+		}
+	}
+
+	var b strings.Builder
+	if startIdx > 0 {
+		b.WriteString(styleHelp.Render(fmt.Sprintf("  (%d more above)", startIdx)) + "\n")
+	}
+	for i := startIdx; i < endIdx; i++ {
+		n := visible[i]
+		isCursor := i == m.cursor
+		prefix := "  "
+		if isCursor {
+			prefix = styleCursor.Render("> ")
+		}
+		if n == nil {
+			line := ".."
+			if isCursor {
+				line = styleSelected.Render(line)
+			}
+			b.WriteString(prefix + line + "\n")
+			continue
+		}
+
+		indent := strings.Repeat("    ", n.depth)
+		icon := iconForEntry(n.entry.name, n.entry.isDir, n.entry.isBucket)
+		nameCol := indent + icon + " " + n.entry.name
+		var metaSuffix string
+		if !n.entry.isDir && !n.entry.isBucket {
+			nameWidth := n.depth*4 + iconDisplayWidth + 1 + len(n.entry.name)
+			pad := ""
+			if maxNameWidth > nameWidth {
+				pad = strings.Repeat(" ", maxNameWidth-nameWidth)
+			}
+			var metaParts []string
+			if n.entry.size > 0 {
+				metaParts = append(metaParts, fmt.Sprintf("%10s", formatSize(n.entry.size)))
+			}
+			if !n.entry.lastModified.IsZero() {
+				metaParts = append(metaParts, n.entry.lastModified.Format("2006-01-02 15:04"))
+			}
+			if len(metaParts) > 0 {
+				metaSuffix = pad + "  " + styleMeta.Render(strings.Join(metaParts, "  "))
+			}
+		}
+		if isCursor {
+			nameCol = styleSelected.Render(nameCol)
+		}
+		b.WriteString(prefix + nameCol + metaSuffix + "\n")
+	}
+	if endIdx < len(visible) {
+		b.WriteString(styleHelp.Render(fmt.Sprintf("  (%d more below)", len(visible)-endIdx)) + "\n")
+	}
+	return b.String()
+}
+
+// renderMessage returns the optional status line rendered below the tree.
+func (m model) renderMessage() string {
+	if m.message == "" {
+		return ""
+	}
+	msgStyle := styleMessageSuccess
+	if m.messageIsError {
+		msgStyle = styleMessageError
+	}
+	return "\n  " + msgStyle.Render(m.message) + "\n"
+}
+
 // revealDir opens a directory node while a confirmed filter is active: it clears
 // the filter so the directory's full contents show, ensures the node is (or gets)
 // expanded, and keeps the cursor on the directory in the now-unfiltered list.
@@ -1794,132 +2213,12 @@ func (m model) View() string {
 		return ""
 	}
 
+	if m.previewMode {
+		return m.previewView()
+	}
+
 	var b strings.Builder
-
-	// Header art
-	b.WriteString("\n")
-	b.WriteString("      ██  _   ___  _    ____\n")
-	b.WriteString("     ██  /_\\ | _ \\| |  | __|\n")
-	b.WriteString("  ▄▄██▄ / _ \\| | || |__| _|\n")
-	b.WriteString("  ██████_/ \\_\\___/|____|____|\n")
-	b.WriteString("   ▀██▀  " + styleMeta.Render(m.version) + "\n")
-	b.WriteString("\n")
-
-	// Path
-	b.WriteString("  " + styleHeader.Render(m.header) + "\n\n")
-
-	visible := m.visibleNodes()
-
-	// Determine visible range for scrolling.
-	// Header uses 9 lines (art + path + blanks), help uses 3 lines.
-	const headerLines = 9
-	const footerLines = 3
-	listHeight := len(visible)
-	startIdx := 0
-	endIdx := listHeight
-	if m.termHeight > 0 {
-		maxItems := m.termHeight - headerLines - footerLines
-		if m.message != "" {
-			maxItems -= 2 // message line + blank
-		}
-		if maxItems < 1 {
-			maxItems = 1
-		}
-		if listHeight > maxItems {
-			half := maxItems / 2
-			startIdx = m.cursor - half
-			if startIdx < 0 {
-				startIdx = 0
-			}
-			endIdx = startIdx + maxItems
-			if endIdx > listHeight {
-				endIdx = listHeight
-				startIdx = endIdx - maxItems
-			}
-		}
-	}
-
-	// Calculate max name column width for alignment.
-	// All emoji icons render as 2 cells in terminal, but runewidth
-	// misreports some (e.g. 🖼️), so we use a constant.
-	const iconDisplayWidth = 2
-	maxNameWidth := 0
-	for i := startIdx; i < endIdx; i++ {
-		n := visible[i]
-		if n == nil || n.entry.isDir || n.entry.isBucket {
-			continue
-		}
-		w := n.depth*4 + iconDisplayWidth + 1 + len(n.entry.name)
-		if w > maxNameWidth {
-			maxNameWidth = w
-		}
-	}
-
-	if startIdx > 0 {
-		b.WriteString(styleHelp.Render(fmt.Sprintf("  (%d more above)", startIdx)) + "\n")
-	}
-
-	for i := startIdx; i < endIdx; i++ {
-		n := visible[i]
-		isCursor := i == m.cursor
-		prefix := "  "
-		if isCursor {
-			prefix = styleCursor.Render("> ")
-		}
-
-		if n == nil {
-			// ".." entry
-			line := ".."
-			if isCursor {
-				line = styleSelected.Render(line)
-			}
-			b.WriteString(prefix + line + "\n")
-			continue
-		}
-
-		indent := strings.Repeat("    ", n.depth)
-		icon := iconForEntry(n.entry.name, n.entry.isDir, n.entry.isBucket)
-		nameCol := indent + icon + " " + n.entry.name
-
-		// Build metadata suffix for files, aligned to a common column
-		var metaSuffix string
-		if !n.entry.isDir && !n.entry.isBucket {
-			nameWidth := n.depth*4 + iconDisplayWidth + 1 + len(n.entry.name)
-			pad := ""
-			if maxNameWidth > nameWidth {
-				pad = strings.Repeat(" ", maxNameWidth-nameWidth)
-			}
-			var metaParts []string
-			if n.entry.size > 0 {
-				s := formatSize(n.entry.size)
-				metaParts = append(metaParts, fmt.Sprintf("%10s", s))
-			}
-			if !n.entry.lastModified.IsZero() {
-				metaParts = append(metaParts, n.entry.lastModified.Format("2006-01-02 15:04"))
-			}
-			if len(metaParts) > 0 {
-				metaSuffix = pad + "  " + styleMeta.Render(strings.Join(metaParts, "  "))
-			}
-		}
-
-		if isCursor {
-			nameCol = styleSelected.Render(nameCol)
-		}
-		b.WriteString(prefix + nameCol + metaSuffix + "\n")
-	}
-
-	if endIdx < listHeight {
-		b.WriteString(styleHelp.Render(fmt.Sprintf("  (%d more below)", listHeight-endIdx)) + "\n")
-	}
-
-	// Message (e.g. error from last action)
-	if m.message != "" {
-		msgStyle := styleMessageSuccess
-		if m.messageIsError {
-			msgStyle = styleMessageError
-		}
-		b.WriteString("\n  " + msgStyle.Render(m.message) + "\n")
-	}
+	b.WriteString(m.renderVersionPrelude())
 
 	// Context menu
 	if m.menuOpen && m.menuTarget != nil {
@@ -2011,7 +2310,7 @@ func (m model) View() string {
 	if m.confirmMode {
 		help = "  y confirm  N/esc cancel"
 	} else if m.versionMode {
-		help = "  ↑/↓ navigate  C-d/C-u scroll  enter restore  esc close"
+		help = "  ↑/↓ navigate  wheel in preview scroll  C-d/C-u scroll  enter restore  esc close"
 	} else if m.menuOpen {
 		help = "  ↑/↓ navigate  enter select  esc/← close"
 	} else if m.newFileChoosing {
@@ -2023,7 +2322,7 @@ func (m model) View() string {
 			help = "  tab complete  ^a/^e move  enter confirm  esc cancel"
 		}
 	} else {
-		help = "  ↑/↓ navigate  ←/→ collapse/expand  enter select  → menu"
+		help = "  ↑/↓ or wheel navigate  ←/→ collapse/expand  enter select  space preview  → menu"
 		if m.canGoUp {
 			help += "  - up"
 		}
@@ -2035,6 +2334,29 @@ func (m model) View() string {
 	b.WriteString(styleHelp.Render(help) + "\n")
 
 	return b.String()
+}
+
+// versionPaneWidths returns the content widths used to render the version
+// panes. The outer panes add their left and right borders; the caller inserts
+// a two-cell gap between them.
+func (m model) versionPaneWidths() (leftWidth, rightWidth int, hasPreview bool) {
+	const minWidthForPreview = 60
+	if m.termWidth > 0 && m.termWidth < minWidthForPreview {
+		return 0, 0, false
+	}
+
+	leftWidth, rightWidth = 40, 40
+	if m.termWidth > 0 {
+		leftWidth = m.termWidth * 40 / 100
+		if leftWidth < 30 {
+			leftWidth = 30
+		}
+		rightWidth = m.termWidth - leftWidth - 6 // two pane borders plus gap
+		if rightWidth < 20 {
+			rightWidth = 20
+		}
+	}
+	return leftWidth, rightWidth, true
 }
 
 // versionPaneHeight returns the number of rows available for the version pane content.
@@ -2133,24 +2455,9 @@ func (m model) renderVersionPane() string {
 
 	leftContent := verBuf.String()
 
-	// If terminal is too narrow, skip preview
-	const minWidthForPreview = 60
-	if m.termWidth > 0 && m.termWidth < minWidthForPreview {
+	leftWidth, rightWidth, hasPreview := m.versionPaneWidths()
+	if !hasPreview {
 		return styleMenuBorder.Render(leftContent)
-	}
-
-	// Calculate widths
-	leftWidth := 40  // default minimum
-	rightWidth := 40 // default minimum
-	if m.termWidth > 0 {
-		leftWidth = m.termWidth * 40 / 100
-		if leftWidth < 30 {
-			leftWidth = 30
-		}
-		rightWidth = m.termWidth - leftWidth - 6 // account for borders and gap
-		if rightWidth < 20 {
-			rightWidth = 20
-		}
 	}
 
 	// Use paneHeight for consistent layout regardless of version count.
