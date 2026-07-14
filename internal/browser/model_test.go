@@ -1836,6 +1836,104 @@ func TestCandidateNavWrap(t *testing.T) {
 	}
 }
 
+// TestInputEditHelpers exercises the rune-based line-editing helpers used by the
+// Emacs bindings, including a multibyte case.
+func TestInputEditHelpers(t *testing.T) {
+	t.Run("insertRunes", func(t *testing.T) {
+		got, cur := insertRunes("ac", 1, "b")
+		if got != "abc" || cur != 2 {
+			t.Errorf("insertRunes = %q,%d want abc,2", got, cur)
+		}
+		got, cur = insertRunes("あc", 1, "い")
+		if got != "あいc" || cur != 2 {
+			t.Errorf("insertRunes multibyte = %q,%d want あいc,2", got, cur)
+		}
+	})
+	t.Run("deleteBefore", func(t *testing.T) {
+		got, cur := deleteBefore("abc", 2)
+		if got != "ac" || cur != 1 {
+			t.Errorf("deleteBefore = %q,%d want ac,1", got, cur)
+		}
+		if got, cur := deleteBefore("abc", 0); got != "abc" || cur != 0 {
+			t.Errorf("deleteBefore at 0 = %q,%d want abc,0", got, cur)
+		}
+		if got, _ := deleteBefore("あい", 1); got != "い" {
+			t.Errorf("deleteBefore multibyte = %q want い", got)
+		}
+	})
+	t.Run("deleteAt", func(t *testing.T) {
+		got, cur := deleteAt("abc", 1)
+		if got != "ac" || cur != 1 {
+			t.Errorf("deleteAt = %q,%d want ac,1", got, cur)
+		}
+		if got, cur := deleteAt("abc", 3); got != "abc" || cur != 3 {
+			t.Errorf("deleteAt at end = %q,%d want abc,3", got, cur)
+		}
+	})
+	t.Run("killToEnd", func(t *testing.T) {
+		if got, cur := killToEnd("abcd", 2); got != "ab" || cur != 2 {
+			t.Errorf("killToEnd = %q,%d want ab,2", got, cur)
+		}
+	})
+	t.Run("killToStart", func(t *testing.T) {
+		if got, cur := killToStart("abcd", 2); got != "cd" || cur != 0 {
+			t.Errorf("killToStart = %q,%d want cd,0", got, cur)
+		}
+	})
+	t.Run("killWordBack", func(t *testing.T) {
+		if got, cur := killWordBack("foo bar", 7); got != "foo " || cur != 4 {
+			t.Errorf("killWordBack = %q,%d want 'foo ',4", got, cur)
+		}
+		if got, cur := killWordBack("foo bar ", 8); got != "foo " || cur != 4 {
+			t.Errorf("killWordBack trailing space = %q,%d want 'foo ',4", got, cur)
+		}
+	})
+}
+
+// TestInputEmacsKeys drives handleInputKey with Emacs control keys and checks the
+// caret and text after each step.
+func TestInputEmacsKeys(t *testing.T) {
+	m := newTestModel([]*node{{entry: entry{name: "f", key: "f"}}}, false)
+	m.inputMode = true
+	m.inputAction = menuDownload
+	m.inputText = "abc"
+	m.inputCursor = 3
+
+	send := func(t tea.KeyType) {
+		u, _ := m.Update(tea.KeyMsg{Type: t})
+		m = u.(model)
+	}
+
+	send(tea.KeyCtrlA)
+	if m.inputCursor != 0 {
+		t.Fatalf("C-a: cursor = %d, want 0", m.inputCursor)
+	}
+	send(tea.KeyCtrlE)
+	if m.inputCursor != 3 {
+		t.Fatalf("C-e: cursor = %d, want 3", m.inputCursor)
+	}
+	send(tea.KeyCtrlB)
+	send(tea.KeyCtrlB)
+	if m.inputCursor != 1 {
+		t.Fatalf("2x C-b: cursor = %d, want 1", m.inputCursor)
+	}
+	send(tea.KeyCtrlD) // delete 'b' under caret
+	if m.inputText != "ac" || m.inputCursor != 1 {
+		t.Fatalf("C-d: %q,%d want ac,1", m.inputText, m.inputCursor)
+	}
+	send(tea.KeyCtrlK) // caret at 1 → kills "c"
+	if m.inputText != "a" || m.inputCursor != 1 {
+		t.Fatalf("C-k: %q,%d want a,1", m.inputText, m.inputCursor)
+	}
+	// Insert then C-u wipes to start.
+	m.inputText = "hello"
+	m.inputCursor = 5
+	send(tea.KeyCtrlU)
+	if m.inputText != "" || m.inputCursor != 0 {
+		t.Fatalf("C-u: %q,%d want '',0", m.inputText, m.inputCursor)
+	}
+}
+
 func TestCandidateLabel(t *testing.T) {
 	tests := []struct{ in, want string }{
 		{"~/Downloads/", "Downloads/"},

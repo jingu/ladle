@@ -179,6 +179,7 @@ type model struct {
 	inputMode            bool
 	inputPrompt          string
 	inputText            string
+	inputCursor          int // caret position within inputText, as a rune index
 	inputAction          menuAction
 	inputCandidates      []string // tab-completion candidates to list when ambiguous
 	inputCandidateCursor int      // highlighted candidate; -1 = none selected
@@ -278,6 +279,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.inputMode {
 			matches := matchingCandidates(m.inputText, msg.candidates)
 			m.inputText = completeInput(m.inputText, msg.prefix, msg.candidates)
+			m.inputCursor = len([]rune(m.inputText))
 			m.inputCandidates = ambiguousCandidates(matches)
 			m.inputCandidateCursor = -1
 		}
@@ -286,6 +288,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.inputMode {
 			matches := matchingCandidates(m.inputText, msg.candidates)
 			m.inputText = completeLocalInput(m.inputText, msg.candidates)
+			m.inputCursor = len([]rune(m.inputText))
 			m.inputCandidates = ambiguousCandidates(matches)
 			m.inputCandidateCursor = -1
 		}
@@ -536,6 +539,7 @@ func (m model) startNewFile() (tea.Model, tea.Cmd) {
 	m.inputMode = true
 	m.inputPrompt = "New file name"
 	m.inputText = m.prefix
+	m.inputCursor = len([]rune(m.inputText))
 	m.inputAction = menuNewFile
 	return m, nil
 }
@@ -728,6 +732,7 @@ func (m model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.inputMode = false
 		m.inputText = ""
+		m.inputCursor = 0
 		return m, nil
 	case tea.KeyUp, tea.KeyLeft:
 		if len(m.inputCandidates) > 0 {
@@ -744,6 +749,7 @@ func (m model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Enter (with no list) confirms the action.
 		if len(m.inputCandidates) > 0 && m.inputCandidateCursor >= 0 {
 			m.inputText = m.inputCandidates[m.inputCandidateCursor]
+			m.inputCursor = len([]rune(m.inputText))
 			m.inputCandidates = nil
 			m.inputCandidateCursor = -1
 			return m, nil
@@ -751,12 +757,47 @@ func (m model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.inputMode = false
 		text := m.inputText
 		m.inputText = ""
+		m.inputCursor = 0
 		m.inputCandidates = nil
 		return m.executeInput(m.inputAction, text)
-	case tea.KeyBackspace:
-		if len(m.inputText) > 0 {
-			m.inputText = m.inputText[:len(m.inputText)-1]
+	case tea.KeyBackspace, tea.KeyCtrlH:
+		m.inputText, m.inputCursor = deleteBefore(m.inputText, m.inputCursor)
+		m.inputCandidates = nil
+		m.inputCandidateCursor = -1
+		return m, nil
+	case tea.KeyCtrlA: // beginning of line
+		m.inputCursor = 0
+		return m, nil
+	case tea.KeyCtrlE: // end of line
+		m.inputCursor = len([]rune(m.inputText))
+		return m, nil
+	case tea.KeyCtrlB: // back one char
+		if m.inputCursor > 0 {
+			m.inputCursor--
 		}
+		return m, nil
+	case tea.KeyCtrlF: // forward one char
+		if m.inputCursor < len([]rune(m.inputText)) {
+			m.inputCursor++
+		}
+		return m, nil
+	case tea.KeyCtrlD: // delete char under cursor
+		m.inputText, m.inputCursor = deleteAt(m.inputText, m.inputCursor)
+		m.inputCandidates = nil
+		m.inputCandidateCursor = -1
+		return m, nil
+	case tea.KeyCtrlK: // kill to end of line
+		m.inputText, m.inputCursor = killToEnd(m.inputText, m.inputCursor)
+		m.inputCandidates = nil
+		m.inputCandidateCursor = -1
+		return m, nil
+	case tea.KeyCtrlU: // kill to beginning of line
+		m.inputText, m.inputCursor = killToStart(m.inputText, m.inputCursor)
+		m.inputCandidates = nil
+		m.inputCandidateCursor = -1
+		return m, nil
+	case tea.KeyCtrlW: // kill previous word
+		m.inputText, m.inputCursor = killWordBack(m.inputText, m.inputCursor)
 		m.inputCandidates = nil
 		m.inputCandidateCursor = -1
 		return m, nil
@@ -777,13 +818,73 @@ func (m model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyCtrlC:
 		m.quitting = true
 		return m, tea.Quit
-	case tea.KeyRunes:
-		m.inputText += string(msg.Runes)
+	case tea.KeyRunes, tea.KeySpace:
+		m.inputText, m.inputCursor = insertRunes(m.inputText, m.inputCursor, string(msg.Runes))
 		m.inputCandidates = nil
 		m.inputCandidateCursor = -1
 		return m, nil
 	}
 	return m, nil
+}
+
+// Input line editing helpers. All operate on a rune index so multibyte object
+// keys and file paths stay intact. Each returns the new text and caret
+// position.
+
+// insertRunes inserts ins at the caret and advances the caret past it.
+func insertRunes(text string, cursor int, ins string) (string, int) {
+	r := []rune(text)
+	in := []rune(ins)
+	out := make([]rune, 0, len(r)+len(in))
+	out = append(out, r[:cursor]...)
+	out = append(out, in...)
+	out = append(out, r[cursor:]...)
+	return string(out), cursor + len(in)
+}
+
+// deleteBefore removes the rune before the caret (Backspace / C-h).
+func deleteBefore(text string, cursor int) (string, int) {
+	if cursor <= 0 {
+		return text, cursor
+	}
+	r := []rune(text)
+	return string(append(r[:cursor-1], r[cursor:]...)), cursor - 1
+}
+
+// deleteAt removes the rune under the caret (C-d).
+func deleteAt(text string, cursor int) (string, int) {
+	r := []rune(text)
+	if cursor >= len(r) {
+		return text, cursor
+	}
+	return string(append(r[:cursor], r[cursor+1:]...)), cursor
+}
+
+// killToEnd drops everything from the caret onward (C-k).
+func killToEnd(text string, cursor int) (string, int) {
+	r := []rune(text)
+	if cursor >= len(r) {
+		return text, cursor
+	}
+	return string(r[:cursor]), cursor
+}
+
+// killToStart drops everything before the caret (C-u).
+func killToStart(text string, cursor int) (string, int) {
+	return string([]rune(text)[cursor:]), 0
+}
+
+// killWordBack drops the whitespace-delimited word before the caret (C-w).
+func killWordBack(text string, cursor int) (string, int) {
+	r := []rune(text)
+	i := cursor
+	for i > 0 && r[i-1] == ' ' {
+		i--
+	}
+	for i > 0 && r[i-1] != ' ' {
+		i--
+	}
+	return string(append(r[:i], r[cursor:]...)), i
 }
 
 // nextCandidate / prevCandidate move the candidate highlight with wrap-around.
@@ -835,6 +936,7 @@ func (m model) executeMenuAction(action menuAction) (tea.Model, tea.Cmd) {
 		m.inputMode = true
 		m.inputPrompt = "Download to directory"
 		m.inputText = "./"
+		m.inputCursor = len([]rune(m.inputText))
 		m.inputAction = menuDownload
 		return m, nil
 
@@ -850,6 +952,7 @@ func (m model) executeMenuAction(action menuAction) (tea.Model, tea.Cmd) {
 		m.inputMode = true
 		m.inputPrompt = "Copy to path (same bucket)"
 		m.inputText = target.entry.key
+		m.inputCursor = len([]rune(m.inputText))
 		m.inputAction = menuCopy
 		return m, nil
 
@@ -857,6 +960,7 @@ func (m model) executeMenuAction(action menuAction) (tea.Model, tea.Cmd) {
 		m.inputMode = true
 		m.inputPrompt = "Move to path (same bucket)"
 		m.inputText = target.entry.key
+		m.inputCursor = len([]rune(m.inputText))
 		m.inputAction = menuMove
 		return m, nil
 
@@ -1850,9 +1954,17 @@ func (m model) View() string {
 		b.WriteString("\n  " + styleInput.Render(m.confirmPrompt) + "\n")
 	}
 
-	// Input line
+	// Input line. The caret "▏" is drawn at inputCursor, splitting the text into
+	// the styled runs before and after it.
 	if m.inputMode {
-		b.WriteString("\n  " + styleInput.Render(m.inputPrompt+": "+m.inputText) + "▏\n")
+		runes := []rune(m.inputText)
+		cur := m.inputCursor
+		if cur > len(runes) {
+			cur = len(runes)
+		}
+		before := string(runes[:cur])
+		after := string(runes[cur:])
+		b.WriteString("\n  " + styleInput.Render(m.inputPrompt+": "+before) + "▏" + styleInput.Render(after) + "\n")
 		if len(m.inputCandidates) > 0 {
 			b.WriteString(renderCandidates(m.inputCandidates, m.inputCandidateCursor))
 		}
@@ -1883,7 +1995,7 @@ func (m model) View() string {
 		if len(m.inputCandidates) > 0 {
 			help = "  tab ↑/↓ ←/→ select  enter pick  esc close list"
 		} else {
-			help = "  tab complete  enter confirm  esc cancel"
+			help = "  tab complete  ^a/^e move  enter confirm  esc cancel"
 		}
 	} else {
 		help = "  ↑/↓ navigate  ←/→ collapse/expand  enter select  → menu"
