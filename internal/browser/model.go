@@ -278,7 +278,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tabCompleteMsg:
 		if m.inputMode {
 			matches := matchingCandidates(m.inputText, msg.candidates)
-			m.inputText = completeInput(m.inputText, msg.prefix, msg.candidates)
+			m.inputText = completeFromMatches(m.inputText, matches)
 			m.inputCursor = len([]rune(m.inputText))
 			m.inputCandidates = ambiguousCandidates(matches)
 			m.inputCandidateCursor = -1
@@ -287,7 +287,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case localTabCompleteMsg:
 		if m.inputMode {
 			matches := matchingCandidates(m.inputText, msg.candidates)
-			m.inputText = completeLocalInput(m.inputText, msg.candidates)
+			m.inputText = completeFromMatches(m.inputText, matches)
 			m.inputCursor = len([]rune(m.inputText))
 			m.inputCandidates = ambiguousCandidates(matches)
 			m.inputCandidateCursor = -1
