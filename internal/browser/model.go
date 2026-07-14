@@ -3,6 +3,7 @@ package browser
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -25,6 +26,8 @@ const (
 	browserHeaderLines = 9
 	browserFooterLines = 3
 )
+
+var errPreviewTooLarge = errors.New("File too large to preview (>512KB)")
 
 // entry represents a single item in the tree.
 type entry struct {
@@ -128,6 +131,28 @@ type filePreviewMsg struct {
 	requestID uint64
 	content   string
 	err       error
+}
+
+// previewLimitWriter retains at most previewMaxBytes+1 bytes and aborts a
+// download once that limit is exceeded.
+type previewLimitWriter struct {
+	writer    io.Writer
+	remaining int64
+}
+
+func (w *previewLimitWriter) Write(p []byte) (int, error) {
+	if int64(len(p)) <= w.remaining {
+		n, err := w.writer.Write(p)
+		w.remaining -= int64(n)
+		return n, err
+	}
+
+	n, err := w.writer.Write(p[:w.remaining])
+	w.remaining -= int64(n)
+	if err != nil {
+		return n, err
+	}
+	return n, errPreviewTooLarge
 }
 
 // navigatedMsg is sent after navigation (goUp / bucket select) rebuilds the view.
@@ -1584,7 +1609,7 @@ func (m model) openPreview(n *node) (tea.Model, tea.Cmd) {
 	m.previewRequestID++
 	if n.entry.size > previewMaxBytes {
 		m.previewLoading = false
-		m.previewError = "File too large to preview (>512KB)"
+		m.previewError = errPreviewTooLarge.Error()
 		return m, nil
 	}
 	m.previewLoading = true
@@ -1592,14 +1617,22 @@ func (m model) openPreview(n *node) (tea.Model, tea.Cmd) {
 }
 
 // loadFilePreview downloads the current object body for the preview overlay.
-// Binary content is refused; oversized files are already screened by openPreview.
+// Known oversized files are refused up front; unknown-size downloads are capped.
 func (m model) loadFilePreview(key string, requestID uint64) tea.Cmd {
 	client := m.client
 	ctx := m.ctx
 	bucket := m.bucket
 	return func() tea.Msg {
 		var buf bytes.Buffer
-		if err := client.Download(ctx, bucket, key, &buf); err != nil {
+		writer := &previewLimitWriter{
+			writer:    &buf,
+			remaining: previewMaxBytes + 1,
+		}
+		err := client.Download(ctx, bucket, key, writer)
+		if errors.Is(err, errPreviewTooLarge) || buf.Len() > previewMaxBytes {
+			return filePreviewMsg{key: key, requestID: requestID, err: errPreviewTooLarge}
+		}
+		if err != nil {
 			return filePreviewMsg{key: key, requestID: requestID, err: err}
 		}
 		data := buf.Bytes()
@@ -1781,11 +1814,14 @@ func (m model) previewView() string {
 		if end > len(lines) {
 			end = len(lines)
 		}
+		contentWidth := width - stylePreviewBorder.GetHorizontalPadding()
+		if contentWidth < 1 {
+			contentWidth = 1
+		}
 		for i := start; i < end; i++ {
 			line := lines[i]
-			r := []rune(line)
-			if len(r) > width {
-				line = string(r[:width])
+			if ansi.StringWidth(line) > contentWidth {
+				line = ansi.Truncate(line, contentWidth, "")
 			}
 			body.WriteString(line + "\n")
 		}

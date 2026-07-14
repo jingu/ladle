@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -3138,6 +3139,26 @@ func TestFilePreview_TooLargeRefusedWithoutFetch(t *testing.T) {
 	}
 }
 
+func TestFilePreview_UnknownSizeTooLargeRefusedDuringDownload(t *testing.T) {
+	mock := storage.NewMockClient()
+	mock.PutObject("test", "big.txt", bytes.Repeat([]byte("x"), previewMaxBytes+1), nil)
+	nodes := []*node{{entry: entry{name: "big.txt", key: "big.txt"}}} // zero size = unknown
+	m := newPreviewModel(mock, nodes)
+
+	res, cmd := m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	if cmd == nil {
+		t.Fatal("expected a load command when the size is unknown")
+	}
+	res, _ = res.(model).Update(cmd())
+	rm := res.(model)
+	if rm.previewLoading {
+		t.Error("should stop loading after the size limit is reached")
+	}
+	if rm.previewError != errPreviewTooLarge.Error() {
+		t.Errorf("previewError: got %q, want %q", rm.previewError, errPreviewTooLarge)
+	}
+}
+
 func TestFilePreview_BinaryRefused(t *testing.T) {
 	mock := storage.NewMockClient()
 	mock.PutObject("test", "bin", []byte{0x00, 0x01, 0x02, 0x03}, nil)
@@ -3154,6 +3175,24 @@ func TestFilePreview_BinaryRefused(t *testing.T) {
 	}
 	if msg.err == nil || !strings.Contains(msg.err.Error(), "binary") {
 		t.Errorf("expected a binary refusal, got err=%v content=%q", msg.err, msg.content)
+	}
+}
+
+func TestFilePreview_TruncatesToPaddedContentWidth(t *testing.T) {
+	m := newTestModel(nil, false)
+	m.termWidth = 30
+	m.termHeight = 30
+	m.previewMode = true
+	m.previewName = "long.txt"
+	m.previewContent = strings.Repeat("x", 100)
+
+	contentWidth := m.termWidth - 4 - stylePreviewBorder.GetHorizontalPadding()
+	out := m.View()
+	if got := strings.Count(out, strings.Repeat("x", contentWidth)); got != 1 {
+		t.Errorf("rendered content-width chunks = %d, want 1 (no wrapped continuation)", got)
+	}
+	if strings.Contains(out, strings.Repeat("x", contentWidth+1)) {
+		t.Errorf("rendered line exceeds padded content width %d", contentWidth)
 	}
 }
 
