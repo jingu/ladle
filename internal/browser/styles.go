@@ -16,4 +16,5 @@ var (
 	styleMenuItem      = lipgloss.NewStyle().Faint(true)
 	stylePreviewBorder = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
 	styleInput         = lipgloss.NewStyle().Bold(true)
+	styleInputCursor   = lipgloss.NewStyle().Reverse(true).Blink(true) // block caret over the char under it
 )

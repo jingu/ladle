@@ -1703,6 +1703,296 @@ func TestLocalTabComplete(t *testing.T) {
 	}
 }
 
+// TestTabCompleteListsAmbiguousCandidates verifies that pressing tab with
+// several matching entries populates the candidate list shown under the input.
+func TestTabCompleteListsAmbiguousCandidates(t *testing.T) {
+	tmpDir := t.TempDir()
+	_ = os.Mkdir(filepath.Join(tmpDir, "Downloads"), 0755)
+	_ = os.Mkdir(filepath.Join(tmpDir, "Documents"), 0755)
+
+	input := filepath.Join(tmpDir, "Do")
+	msg := localTabComplete(input)().(localTabCompleteMsg)
+
+	nodes := []*node{{entry: entry{name: "file.txt", key: "file.txt"}}}
+	m := newTestModel(nodes, false)
+	m.inputMode = true
+	m.inputText = input
+
+	updated, _ := m.Update(msg)
+	m = updated.(model)
+
+	if len(m.inputCandidates) != 2 {
+		t.Fatalf("expected 2 candidates listed, got %d: %v", len(m.inputCandidates), m.inputCandidates)
+	}
+
+	// Typing another char clears the list.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	m = updated.(model)
+	if m.inputCandidates != nil {
+		t.Errorf("expected candidates cleared after typing, got %v", m.inputCandidates)
+	}
+}
+
+// TestTabCandidateArrowSelect verifies arrow keys highlight a candidate and
+// Enter fills it into the input (a second Enter then confirms).
+func TestTabCandidateArrowSelect(t *testing.T) {
+	tmpDir := t.TempDir()
+	_ = os.Mkdir(filepath.Join(tmpDir, "Downloads"), 0755)
+	_ = os.Mkdir(filepath.Join(tmpDir, "Documents"), 0755)
+
+	input := filepath.Join(tmpDir, "Do")
+	msg := localTabComplete(input)().(localTabCompleteMsg)
+
+	m := newTestModel([]*node{{entry: entry{name: "f", key: "f"}}}, false)
+	m.inputMode = true
+	m.inputText = input
+	m.inputAction = menuDownload
+	updated, _ := m.Update(msg)
+	m = updated.(model)
+
+	if m.inputCandidateCursor != -1 {
+		t.Fatalf("expected no selection initially, got cursor %d", m.inputCandidateCursor)
+	}
+
+	// Down highlights the first candidate; Right moves to the second.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	m = updated.(model)
+	if m.inputCandidateCursor != 1 {
+		t.Fatalf("expected cursor 1 after Down+Right, got %d", m.inputCandidateCursor)
+	}
+
+	want := m.inputCandidates[1]
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(model)
+	if m.inputText != want {
+		t.Errorf("expected input filled with %q, got %q", want, m.inputText)
+	}
+	if m.inputCandidates != nil || m.inputCandidateCursor != -1 {
+		t.Errorf("expected list cleared after pick, got %v cursor %d", m.inputCandidates, m.inputCandidateCursor)
+	}
+	if !m.inputMode {
+		t.Error("expected to remain in input mode after picking a candidate")
+	}
+}
+
+// TestTabCyclesCandidates verifies that once the candidate list is open,
+// repeated Tab presses step the highlight forward (with wrap-around).
+func TestTabCyclesCandidates(t *testing.T) {
+	tmpDir := t.TempDir()
+	_ = os.Mkdir(filepath.Join(tmpDir, "Downloads"), 0755)
+	_ = os.Mkdir(filepath.Join(tmpDir, "Documents"), 0755)
+
+	input := filepath.Join(tmpDir, "Do")
+	msg := localTabComplete(input)().(localTabCompleteMsg)
+
+	m := newTestModel([]*node{{entry: entry{name: "f", key: "f"}}}, false)
+	m.inputMode = true
+	m.inputText = input
+	m.inputAction = menuDownload
+	updated, _ := m.Update(msg)
+	m = updated.(model)
+
+	if len(m.inputCandidates) != 2 {
+		t.Fatalf("expected 2 candidates, got %d", len(m.inputCandidates))
+	}
+	if m.inputCandidateCursor != -1 {
+		t.Fatalf("expected no selection initially, got cursor %d", m.inputCandidateCursor)
+	}
+
+	// First Tab (list already open) highlights candidate 0.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(model)
+	if m.inputCandidateCursor != 0 {
+		t.Fatalf("expected cursor 0 after first Tab, got %d", m.inputCandidateCursor)
+	}
+	// Second Tab → candidate 1.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(model)
+	if m.inputCandidateCursor != 1 {
+		t.Fatalf("expected cursor 1 after second Tab, got %d", m.inputCandidateCursor)
+	}
+	// Third Tab wraps back to 0.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(model)
+	if m.inputCandidateCursor != 0 {
+		t.Fatalf("expected cursor 0 after wrap, got %d", m.inputCandidateCursor)
+	}
+}
+
+func TestCandidateNavWrap(t *testing.T) {
+	if got := prevCandidate(-1, 3); got != 2 {
+		t.Errorf("prevCandidate(-1,3) = %d, want 2", got)
+	}
+	if got := nextCandidate(-1, 3); got != 0 {
+		t.Errorf("nextCandidate(-1,3) = %d, want 0", got)
+	}
+	if got := nextCandidate(2, 3); got != 0 {
+		t.Errorf("nextCandidate(2,3) = %d, want 0 (wrap)", got)
+	}
+	if got := prevCandidate(0, 3); got != 2 {
+		t.Errorf("prevCandidate(0,3) = %d, want 2 (wrap)", got)
+	}
+}
+
+// TestInputEditHelpers exercises the rune-based line-editing helpers used by the
+// Emacs bindings, including a multibyte case.
+func TestInputEditHelpers(t *testing.T) {
+	t.Run("insertRunes", func(t *testing.T) {
+		got, cur := insertRunes("ac", 1, "b")
+		if got != "abc" || cur != 2 {
+			t.Errorf("insertRunes = %q,%d want abc,2", got, cur)
+		}
+		got, cur = insertRunes("あc", 1, "い")
+		if got != "あいc" || cur != 2 {
+			t.Errorf("insertRunes multibyte = %q,%d want あいc,2", got, cur)
+		}
+	})
+	t.Run("deleteBefore", func(t *testing.T) {
+		got, cur := deleteBefore("abc", 2)
+		if got != "ac" || cur != 1 {
+			t.Errorf("deleteBefore = %q,%d want ac,1", got, cur)
+		}
+		if got, cur := deleteBefore("abc", 0); got != "abc" || cur != 0 {
+			t.Errorf("deleteBefore at 0 = %q,%d want abc,0", got, cur)
+		}
+		if got, _ := deleteBefore("あい", 1); got != "い" {
+			t.Errorf("deleteBefore multibyte = %q want い", got)
+		}
+	})
+	t.Run("deleteAt", func(t *testing.T) {
+		got, cur := deleteAt("abc", 1)
+		if got != "ac" || cur != 1 {
+			t.Errorf("deleteAt = %q,%d want ac,1", got, cur)
+		}
+		if got, cur := deleteAt("abc", 3); got != "abc" || cur != 3 {
+			t.Errorf("deleteAt at end = %q,%d want abc,3", got, cur)
+		}
+	})
+	t.Run("killToEnd", func(t *testing.T) {
+		if got, cur := killToEnd("abcd", 2); got != "ab" || cur != 2 {
+			t.Errorf("killToEnd = %q,%d want ab,2", got, cur)
+		}
+	})
+	t.Run("killToStart", func(t *testing.T) {
+		if got, cur := killToStart("abcd", 2); got != "cd" || cur != 0 {
+			t.Errorf("killToStart = %q,%d want cd,0", got, cur)
+		}
+	})
+	t.Run("killWordBack", func(t *testing.T) {
+		if got, cur := killWordBack("foo bar", 7); got != "foo " || cur != 4 {
+			t.Errorf("killWordBack = %q,%d want 'foo ',4", got, cur)
+		}
+		if got, cur := killWordBack("foo bar ", 8); got != "foo " || cur != 4 {
+			t.Errorf("killWordBack trailing space = %q,%d want 'foo ',4", got, cur)
+		}
+	})
+}
+
+// TestInputEmacsKeys drives handleInputKey with Emacs control keys and checks the
+// caret and text after each step.
+func TestInputEmacsKeys(t *testing.T) {
+	m := newTestModel([]*node{{entry: entry{name: "f", key: "f"}}}, false)
+	m.inputMode = true
+	m.inputAction = menuDownload
+	m.inputText = "abc"
+	m.inputCursor = 3
+
+	send := func(t tea.KeyType) {
+		u, _ := m.Update(tea.KeyMsg{Type: t})
+		m = u.(model)
+	}
+
+	send(tea.KeyCtrlA)
+	if m.inputCursor != 0 {
+		t.Fatalf("C-a: cursor = %d, want 0", m.inputCursor)
+	}
+	send(tea.KeyCtrlE)
+	if m.inputCursor != 3 {
+		t.Fatalf("C-e: cursor = %d, want 3", m.inputCursor)
+	}
+	send(tea.KeyCtrlB)
+	send(tea.KeyCtrlB)
+	if m.inputCursor != 1 {
+		t.Fatalf("2x C-b: cursor = %d, want 1", m.inputCursor)
+	}
+	send(tea.KeyCtrlD) // delete 'b' under caret
+	if m.inputText != "ac" || m.inputCursor != 1 {
+		t.Fatalf("C-d: %q,%d want ac,1", m.inputText, m.inputCursor)
+	}
+	send(tea.KeyCtrlK) // caret at 1 → kills "c"
+	if m.inputText != "a" || m.inputCursor != 1 {
+		t.Fatalf("C-k: %q,%d want a,1", m.inputText, m.inputCursor)
+	}
+	// Insert then C-u wipes to start.
+	m.inputText = "hello"
+	m.inputCursor = 5
+	send(tea.KeyCtrlU)
+	if m.inputText != "" || m.inputCursor != 0 {
+		t.Fatalf("C-u: %q,%d want '',0", m.inputText, m.inputCursor)
+	}
+}
+
+// TestRenderCandidatesWindow verifies the visible window slides to keep the
+// highlighted candidate on screen when there are more than the display cap.
+func TestRenderCandidatesWindow(t *testing.T) {
+	candidates := make([]string, 80)
+	for i := range candidates {
+		candidates[i] = fmt.Sprintf("item%02d/", i)
+	}
+
+	// Selection within the cap: window starts at 0, shows a trailing "+more".
+	within := renderCandidates(candidates, 5)
+	if !strings.Contains(within, "item05/") {
+		t.Errorf("expected selected item05 shown, got: %q", within)
+	}
+	if strings.Contains(within, "more) …") {
+		t.Errorf("did not expect a leading 'more' marker when window starts at 0: %q", within)
+	}
+
+	// Selection past the cap: window slides so item70 is visible.
+	past := renderCandidates(candidates, 70)
+	if !strings.Contains(past, "item70/") {
+		t.Errorf("expected selected item70 shown after window slide, got: %q", past)
+	}
+	if !strings.Contains(past, "more) …") {
+		t.Errorf("expected a leading 'more' marker once window has slid: %q", past)
+	}
+}
+
+func TestCandidateLabel(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"~/Downloads/", "Downloads/"},
+		{"path/to/file.txt", "file.txt"},
+		{"file.txt", "file.txt"},
+		{"beta/", "beta/"},
+	}
+	for _, tt := range tests {
+		if got := candidateLabel(tt.in); got != tt.want {
+			t.Errorf("candidateLabel(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+// TestLocalTabCompleteTilde verifies completion reads the expanded home
+// directory while keeping the "~" in the returned candidates so they still
+// prefix-match the user's typed input.
+func TestLocalTabCompleteTilde(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	_ = os.WriteFile(filepath.Join(home, "alpha.txt"), []byte("a"), 0644)
+	_ = os.Mkdir(filepath.Join(home, "beta"), 0755)
+
+	cmd := localTabComplete("~/al")
+	msg := cmd().(localTabCompleteMsg)
+
+	completed := completeLocalInput("~/al", msg.candidates)
+	if completed != "~/alpha.txt" {
+		t.Errorf("expected %q, got %q (candidates: %v)", "~/alpha.txt", completed, msg.candidates)
+	}
+}
+
 func TestLocalTabCompleteSingleMatch(t *testing.T) {
 	tmpDir := t.TempDir()
 	_ = os.WriteFile(filepath.Join(tmpDir, "unique.txt"), []byte("a"), 0644)

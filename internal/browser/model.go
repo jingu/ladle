@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jingu/ladle/internal/apierror"
 	"github.com/jingu/ladle/internal/editor"
+	"github.com/jingu/ladle/internal/localpath"
 	"github.com/jingu/ladle/internal/storage"
 	"github.com/jingu/ladle/internal/uri"
 )
@@ -175,15 +176,18 @@ type model struct {
 	menuTarget *node // the file node the menu was opened for
 
 	// Text input state (for download dir, copy/move destination)
-	inputMode   bool
-	inputPrompt string
-	inputText   string
-	inputAction menuAction
+	inputMode            bool
+	inputPrompt          string
+	inputText            string
+	inputCursor          int // caret position within inputText, as a rune index
+	inputAction          menuAction
+	inputCandidates      []string // tab-completion candidates to list when ambiguous
+	inputCandidateCursor int      // highlighted candidate; -1 = none selected
 
 	// Confirm dialog state (for delete)
-	confirmMode       bool
-	confirmPrompt     string
-	pendingDeleteKey  string
+	confirmMode      bool
+	confirmPrompt    string
+	pendingDeleteKey string
 
 	// Version mode state
 	versionMode   bool
@@ -273,12 +277,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tabCompleteMsg:
 		if m.inputMode {
-			m.inputText = completeInput(m.inputText, msg.prefix, msg.candidates)
+			matches := matchingCandidates(m.inputText, msg.candidates)
+			m.inputText = completeFromMatches(m.inputText, matches)
+			m.inputCursor = len([]rune(m.inputText))
+			m.inputCandidates = ambiguousCandidates(matches)
+			m.inputCandidateCursor = -1
 		}
 		return m, nil
 	case localTabCompleteMsg:
 		if m.inputMode {
-			m.inputText = completeLocalInput(m.inputText, msg.candidates)
+			matches := matchingCandidates(m.inputText, msg.candidates)
+			m.inputText = completeFromMatches(m.inputText, matches)
+			m.inputCursor = len([]rune(m.inputText))
+			m.inputCandidates = ambiguousCandidates(matches)
+			m.inputCandidateCursor = -1
 		}
 		return m, nil
 	case actionDoneMsg:
@@ -527,6 +539,7 @@ func (m model) startNewFile() (tea.Model, tea.Cmd) {
 	m.inputMode = true
 	m.inputPrompt = "New file name"
 	m.inputText = m.prefix
+	m.inputCursor = len([]rune(m.inputText))
 	m.inputAction = menuNewFile
 	return m, nil
 }
@@ -711,20 +724,90 @@ func (m model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEscape:
+		// With a candidate list open, Esc just dismisses the list.
+		if len(m.inputCandidates) > 0 {
+			m.inputCandidates = nil
+			m.inputCandidateCursor = -1
+			return m, nil
+		}
 		m.inputMode = false
 		m.inputText = ""
+		m.inputCursor = 0
+		return m, nil
+	case tea.KeyUp, tea.KeyLeft:
+		if len(m.inputCandidates) > 0 {
+			m.inputCandidateCursor = prevCandidate(m.inputCandidateCursor, len(m.inputCandidates))
+		}
+		return m, nil
+	case tea.KeyDown, tea.KeyRight:
+		if len(m.inputCandidates) > 0 {
+			m.inputCandidateCursor = nextCandidate(m.inputCandidateCursor, len(m.inputCandidates))
+		}
 		return m, nil
 	case tea.KeyEnter:
+		// A highlighted candidate is filled into the input first; a second
+		// Enter (with no list) confirms the action.
+		if len(m.inputCandidates) > 0 && m.inputCandidateCursor >= 0 {
+			m.inputText = m.inputCandidates[m.inputCandidateCursor]
+			m.inputCursor = len([]rune(m.inputText))
+			m.inputCandidates = nil
+			m.inputCandidateCursor = -1
+			return m, nil
+		}
 		m.inputMode = false
 		text := m.inputText
 		m.inputText = ""
+		m.inputCursor = 0
+		m.inputCandidates = nil
 		return m.executeInput(m.inputAction, text)
-	case tea.KeyBackspace:
-		if len(m.inputText) > 0 {
-			m.inputText = m.inputText[:len(m.inputText)-1]
+	case tea.KeyBackspace, tea.KeyCtrlH:
+		m.inputText, m.inputCursor = deleteBefore(m.inputText, m.inputCursor)
+		m.inputCandidates = nil
+		m.inputCandidateCursor = -1
+		return m, nil
+	case tea.KeyCtrlA: // beginning of line
+		m.inputCursor = 0
+		return m, nil
+	case tea.KeyCtrlE: // end of line
+		m.inputCursor = len([]rune(m.inputText))
+		return m, nil
+	case tea.KeyCtrlB: // back one char
+		if m.inputCursor > 0 {
+			m.inputCursor--
 		}
 		return m, nil
+	case tea.KeyCtrlF: // forward one char
+		if m.inputCursor < len([]rune(m.inputText)) {
+			m.inputCursor++
+		}
+		return m, nil
+	case tea.KeyCtrlD: // delete char under cursor
+		m.inputText, m.inputCursor = deleteAt(m.inputText, m.inputCursor)
+		m.inputCandidates = nil
+		m.inputCandidateCursor = -1
+		return m, nil
+	case tea.KeyCtrlK: // kill to end of line
+		m.inputText, m.inputCursor = killToEnd(m.inputText, m.inputCursor)
+		m.inputCandidates = nil
+		m.inputCandidateCursor = -1
+		return m, nil
+	case tea.KeyCtrlU: // kill to beginning of line
+		m.inputText, m.inputCursor = killToStart(m.inputText, m.inputCursor)
+		m.inputCandidates = nil
+		m.inputCandidateCursor = -1
+		return m, nil
+	case tea.KeyCtrlW: // kill previous word
+		m.inputText, m.inputCursor = killWordBack(m.inputText, m.inputCursor)
+		m.inputCandidates = nil
+		m.inputCandidateCursor = -1
+		return m, nil
 	case tea.KeyTab:
+		// With a candidate list already open, Tab cycles the highlight forward
+		// (same as ↓/→) so repeated Tab presses step through the candidates.
+		if len(m.inputCandidates) > 0 {
+			m.inputCandidateCursor = nextCandidate(m.inputCandidateCursor, len(m.inputCandidates))
+			return m, nil
+		}
 		if m.inputAction == menuCopy || m.inputAction == menuMove || m.inputAction == menuNewFile {
 			return m, m.tabComplete(m.inputText)
 		}
@@ -735,11 +818,89 @@ func (m model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyCtrlC:
 		m.quitting = true
 		return m, tea.Quit
-	case tea.KeyRunes:
-		m.inputText += string(msg.Runes)
+	case tea.KeyRunes, tea.KeySpace:
+		m.inputText, m.inputCursor = insertRunes(m.inputText, m.inputCursor, string(msg.Runes))
+		m.inputCandidates = nil
+		m.inputCandidateCursor = -1
 		return m, nil
 	}
 	return m, nil
+}
+
+// Input line editing helpers. All operate on a rune index so multibyte object
+// keys and file paths stay intact. Each returns the new text and caret
+// position.
+
+// insertRunes inserts ins at the caret and advances the caret past it.
+func insertRunes(text string, cursor int, ins string) (string, int) {
+	r := []rune(text)
+	in := []rune(ins)
+	out := make([]rune, 0, len(r)+len(in))
+	out = append(out, r[:cursor]...)
+	out = append(out, in...)
+	out = append(out, r[cursor:]...)
+	return string(out), cursor + len(in)
+}
+
+// deleteBefore removes the rune before the caret (Backspace / C-h).
+func deleteBefore(text string, cursor int) (string, int) {
+	if cursor <= 0 {
+		return text, cursor
+	}
+	r := []rune(text)
+	return string(append(r[:cursor-1], r[cursor:]...)), cursor - 1
+}
+
+// deleteAt removes the rune under the caret (C-d).
+func deleteAt(text string, cursor int) (string, int) {
+	r := []rune(text)
+	if cursor >= len(r) {
+		return text, cursor
+	}
+	return string(append(r[:cursor], r[cursor+1:]...)), cursor
+}
+
+// killToEnd drops everything from the caret onward (C-k).
+func killToEnd(text string, cursor int) (string, int) {
+	r := []rune(text)
+	if cursor >= len(r) {
+		return text, cursor
+	}
+	return string(r[:cursor]), cursor
+}
+
+// killToStart drops everything before the caret (C-u).
+func killToStart(text string, cursor int) (string, int) {
+	return string([]rune(text)[cursor:]), 0
+}
+
+// killWordBack drops the whitespace-delimited word before the caret (C-w).
+func killWordBack(text string, cursor int) (string, int) {
+	r := []rune(text)
+	i := cursor
+	for i > 0 && r[i-1] == ' ' {
+		i--
+	}
+	for i > 0 && r[i-1] != ' ' {
+		i--
+	}
+	return string(append(r[:i], r[cursor:]...)), i
+}
+
+// nextCandidate / prevCandidate move the candidate highlight with wrap-around.
+// From the unselected state (-1) they land on the first / last entry.
+func nextCandidate(cursor, n int) int {
+	if cursor < 0 {
+		return 0
+	}
+	return (cursor + 1) % n
+}
+
+func prevCandidate(cursor, n int) int {
+	if cursor < 0 {
+		return n - 1
+	}
+	return (cursor - 1 + n) % n
 }
 
 func (m model) executeMenuAction(action menuAction) (tea.Model, tea.Cmd) {
@@ -775,6 +936,7 @@ func (m model) executeMenuAction(action menuAction) (tea.Model, tea.Cmd) {
 		m.inputMode = true
 		m.inputPrompt = "Download to directory"
 		m.inputText = "./"
+		m.inputCursor = len([]rune(m.inputText))
 		m.inputAction = menuDownload
 		return m, nil
 
@@ -790,6 +952,7 @@ func (m model) executeMenuAction(action menuAction) (tea.Model, tea.Cmd) {
 		m.inputMode = true
 		m.inputPrompt = "Copy to path (same bucket)"
 		m.inputText = target.entry.key
+		m.inputCursor = len([]rune(m.inputText))
 		m.inputAction = menuCopy
 		return m, nil
 
@@ -797,6 +960,7 @@ func (m model) executeMenuAction(action menuAction) (tea.Model, tea.Cmd) {
 		m.inputMode = true
 		m.inputPrompt = "Move to path (same bucket)"
 		m.inputText = target.entry.key
+		m.inputCursor = len([]rune(m.inputText))
 		m.inputAction = menuMove
 		return m, nil
 
@@ -965,26 +1129,29 @@ func (m model) tabComplete(input string) tea.Cmd {
 
 // completeInput computes the completed input text from candidates.
 func completeInput(input, dirPrefix string, candidates []string) string {
-	if len(candidates) == 0 {
-		return input
-	}
+	return completeFromMatches(input, matchingCandidates(input, candidates))
+}
 
-	// Filter candidates that match the current input as a prefix.
+// matchingCandidates returns the candidates that have input as a prefix.
+func matchingCandidates(input string, candidates []string) []string {
 	var matches []string
 	for _, c := range candidates {
 		if strings.HasPrefix(c, input) {
 			matches = append(matches, c)
 		}
 	}
+	return matches
+}
 
+// completeFromMatches extends input to the sole match, or to the longest common
+// prefix when several match. Returns input unchanged when nothing extends it.
+func completeFromMatches(input string, matches []string) string {
 	if len(matches) == 0 {
 		return input
 	}
 	if len(matches) == 1 {
 		return matches[0]
 	}
-
-	// Multiple matches: complete to longest common prefix.
 	lcp := matches[0]
 	for _, m := range matches[1:] {
 		lcp = longestCommonPrefix(lcp, m)
@@ -995,6 +1162,61 @@ func completeInput(input, dirPrefix string, candidates []string) string {
 	return input
 }
 
+// ambiguousCandidates returns matches only when more than one remains, so the
+// UI lists them; a single or empty match needs no list.
+func ambiguousCandidates(matches []string) []string {
+	if len(matches) > 1 {
+		return matches
+	}
+	return nil
+}
+
+// candidateLabel returns the trailing path element of a completion candidate
+// (the part after the last "/"), keeping a trailing "/" for directories.
+func candidateLabel(c string) string {
+	trimmed := strings.TrimRight(c, "/")
+	if i := strings.LastIndexByte(trimmed, '/'); i >= 0 {
+		trimmed = trimmed[i+1:]
+	}
+	if strings.HasSuffix(c, "/") {
+		return trimmed + "/"
+	}
+	return trimmed
+}
+
+// renderCandidates formats the tab-completion candidate list shown under the
+// input line, highlighting the arrow-key selection and capping the count so a
+// large directory does not flood the view.
+func renderCandidates(candidates []string, cursor int) string {
+	const max = 60
+	// Slide the visible window so the highlighted candidate stays on screen even
+	// when there are more candidates than the cap.
+	start := 0
+	if cursor >= max {
+		start = cursor - max + 1
+	}
+	end := start + max
+	if end > len(candidates) {
+		end = len(candidates)
+	}
+	labels := make([]string, 0, max+2)
+	if start > 0 {
+		labels = append(labels, styleHelp.Render(fmt.Sprintf("(%d more) …", start)))
+	}
+	for i := start; i < end; i++ {
+		label := candidateLabel(candidates[i])
+		if i == cursor {
+			labels = append(labels, styleMenuSelected.Render(label))
+		} else {
+			labels = append(labels, styleHelp.Render(label))
+		}
+	}
+	if end < len(candidates) {
+		labels = append(labels, styleHelp.Render(fmt.Sprintf("… (+%d more)", len(candidates)-end)))
+	}
+	return "  " + strings.Join(labels, "  ") + "\n"
+}
+
 // localTabComplete fires an async command to list local directory entries.
 func localTabComplete(input string) tea.Cmd {
 	return func() tea.Msg {
@@ -1002,7 +1224,14 @@ func localTabComplete(input string) tea.Cmd {
 		if dir == "" {
 			dir = "."
 		}
-		entries, err := os.ReadDir(dir)
+		// A bare "~" has no trailing slash, so filepath.Dir yields ".";
+		// treat it as the home directory so its entries are listed.
+		if input == "~" {
+			dir = "~"
+		}
+		// Read the real directory (expanding a leading ~) but keep candidates in
+		// the original form so they still prefix-match the user's typed input.
+		entries, err := os.ReadDir(localpath.ExpandTilde(dir))
 		if err != nil {
 			return localTabCompleteMsg{candidates: nil}
 		}
@@ -1020,32 +1249,7 @@ func localTabComplete(input string) tea.Cmd {
 
 // completeLocalInput computes completed local path from candidates.
 func completeLocalInput(input string, candidates []string) string {
-	if len(candidates) == 0 {
-		return input
-	}
-
-	var matches []string
-	for _, c := range candidates {
-		if strings.HasPrefix(c, input) {
-			matches = append(matches, c)
-		}
-	}
-
-	if len(matches) == 0 {
-		return input
-	}
-	if len(matches) == 1 {
-		return matches[0]
-	}
-
-	lcp := matches[0]
-	for _, m := range matches[1:] {
-		lcp = longestCommonPrefix(lcp, m)
-	}
-	if len(lcp) > len(input) {
-		return lcp
-	}
-	return input
+	return completeFromMatches(input, matchingCandidates(input, candidates))
 }
 
 // longestCommonPrefix returns the longest common prefix of two strings.
@@ -1767,9 +1971,28 @@ func (m model) View() string {
 		b.WriteString("\n  " + styleInput.Render(m.confirmPrompt) + "\n")
 	}
 
-	// Input line
+	// Input line. A block caret (reverse video + blink) covers the character
+	// under inputCursor; at end-of-line it covers a trailing space.
 	if m.inputMode {
-		b.WriteString("\n  " + styleInput.Render(m.inputPrompt+": "+m.inputText) + "▏\n")
+		runes := []rune(m.inputText)
+		cur := m.inputCursor
+		if cur > len(runes) {
+			cur = len(runes)
+		}
+		before := string(runes[:cur])
+		caretCh := " "
+		after := ""
+		if cur < len(runes) {
+			caretCh = string(runes[cur])
+			after = string(runes[cur+1:])
+		}
+		line := styleInput.Render(m.inputPrompt+": "+before) +
+			styleInputCursor.Render(caretCh) +
+			styleInput.Render(after)
+		b.WriteString("\n  " + line + "\n")
+		if len(m.inputCandidates) > 0 {
+			b.WriteString(renderCandidates(m.inputCandidates, m.inputCandidateCursor))
+		}
 	}
 
 	// Filter line
@@ -1794,7 +2017,11 @@ func (m model) View() string {
 	} else if m.newFileChoosing {
 		help = "  ↑/↓ navigate  enter select  esc cancel"
 	} else if m.inputMode {
-		help = "  tab complete  enter confirm  esc cancel"
+		if len(m.inputCandidates) > 0 {
+			help = "  tab ↑/↓ ←/→ select  enter pick  esc close list"
+		} else {
+			help = "  tab complete  ^a/^e move  enter confirm  esc cancel"
+		}
 	} else {
 		help = "  ↑/↓ navigate  ←/→ collapse/expand  enter select  → menu"
 		if m.canGoUp {
