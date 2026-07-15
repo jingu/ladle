@@ -38,6 +38,12 @@ _ladle_completions() {
     prev="${COMP_WORDS[COMP_CWORD-1]}"
     cmd="${COMP_WORDS[0]}"
     opts="--meta --versions --editor --profile --region --account --project --endpoint-url --no-sign-request --yes --force --dry-run --help --version"
+    commands="cp skill s3:// gs:// az:// r2:// ssm://"
+
+    if [[ "${COMP_CWORD}" -eq 1 && "$cur" != *://* && "$cur" != -* ]]; then
+        COMPREPLY=( $(compgen -W "${commands}" -- "${cur}") )
+        return 0
+    fi
 
     # Extract --profile, --account and --project values from command line
     local profile_arg="" account_arg="" project_arg=""
@@ -126,6 +132,25 @@ _ladle() {
         '--version[Show version]'
     )
 
+    if (( CURRENT == 2 )); then
+        if [[ "${words[CURRENT]}" == *://* ]]; then
+            _ladle_uri
+        else
+            local -a commands
+            commands=(
+                'cp:Copy an object with its metadata'
+                'skill:Manage the ladle Agent Skill'
+                's3://:Amazon S3 URI'
+                'gs://:Google Cloud Storage URI'
+                'az://:Azure Blob Storage URI'
+                'r2://:Cloudflare R2 URI'
+                'ssm://:AWS Systems Manager Parameter URI'
+            )
+            _describe -t commands 'ladle command' commands
+        fi
+        return
+    fi
+
     _arguments -s $opts '*:uri:_ladle_uri'
 }
 
@@ -168,7 +193,7 @@ _ladle_uri() {
             compadd -S '/' -q -- ${buckets[@]/#/${scheme}://}
         fi
     else
-        compadd -S '://' -- s3 gs az r2
+        compadd -S '://' -- s3 gs az r2 ssm
     fi
 }
 
@@ -196,6 +221,7 @@ complete -c ladle -l dry-run -d 'Show diff without uploading'
 complete -c ladle -l help -d 'Show help'
 complete -c ladle -l version -d 'Show version'
 
+complete -c ladle -n '__fish_use_subcommand' -a cp -d 'Copy an object with its metadata'
 function __ladle_complete_uri
     set -l cur (commandline -ct)
     set -l cmd (commandline -po)[1]
@@ -232,7 +258,7 @@ function __ladle_complete_uri
             end
         end
     else
-        printf '%s\n' 's3://' 'gs://' 'az://' 'r2://'
+        printf '%s\n' 's3://' 'gs://' 'az://' 'r2://' 'ssm://'
     end
 end
 

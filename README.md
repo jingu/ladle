@@ -129,6 +129,20 @@ When stdout is redirected, a directory URI (or bare scheme) prints a listing and
 
 When stdin is redirected, confirmation reads from `/dev/tty`. Use `--yes` to skip in non-interactive environments. If the object doesn't exist yet, stdin upload creates it as a new object. Add `--append` to keep the existing value and add stdin after it (a missing object is still created).
 
+### Copy objects
+
+`ladle cp` downloads the source completely before it changes the destination. It copies the body and standard metadata (`Content-Type`, `Cache-Control`, `Content-Encoding`, `Content-Disposition`, and user metadata). Provider-specific settings such as ACLs, storage class, tags, retention settings, and encryption keys are not copied.
+
+```bash
+# Preview content and metadata differences without writing
+ladle cp --dry-run s3://myapp-source/config.json s3://myapp-destination/config.json
+
+# Copy after approval
+ladle cp --yes s3://myapp-source/config.json s3://myapp-destination/config.json
+```
+
+The source and destination may use different supported object-storage providers. Binary content is copied but its content diff is skipped. `cp` does not support `ssm://` parameters.
+
 ### Browse files
 
 ```

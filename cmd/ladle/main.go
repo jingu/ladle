@@ -144,6 +144,7 @@ AWS SSM Parameter Store (ssm:// — no bucket; path is the parameter name):
 	_ = cmd.Flags().MarkHidden("complete-bucket")
 	_ = cmd.Flags().MarkHidden("complete-path")
 
+	cmd.AddCommand(newCopyCmd())
 	cmd.AddCommand(newSkillCmd())
 
 	return cmd
