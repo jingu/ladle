@@ -27,7 +27,7 @@ const (
 	browserFooterLines = 3
 )
 
-var errPreviewTooLarge = errors.New("File too large to preview (>512KB)")
+var errPreviewTooLarge = errors.New("file too large to preview (>512KB)")
 
 // entry represents a single item in the tree.
 type entry struct {
