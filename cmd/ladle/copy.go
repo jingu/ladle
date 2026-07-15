@@ -102,6 +102,13 @@ func readCopyDiffPrefix(r io.Reader) (string, bool, error) {
 	return string(data), len(data) > maxCopyDiffBytes, nil
 }
 
+func writeCopyStatus(out io.Writer, format string, args ...any) error {
+	if _, err := fmt.Fprintf(out, format, args...); err != nil {
+		return fmt.Errorf("writing copy status: %w", err)
+	}
+	return nil
+}
+
 func runCopy(ctx context.Context, sourceClient, destinationClient storage.Client, source, destination *uri.URI, f *flags, in io.Reader, out io.Writer) error {
 	tmp, err := os.CreateTemp("", "ladle-copy-*")
 	if err != nil {
@@ -144,7 +151,9 @@ func runCopy(ctx context.Context, sourceClient, destinationClient storage.Client
 		if !errors.As(classified, &apiErr) || apiErr.Kind != apierror.KindNotFound {
 			return fmt.Errorf("downloading destination %s: %w", destination, err)
 		}
-		fmt.Fprintf(out, "Object %s does not exist — will create new.\n", destination)
+		if err := writeCopyStatus(out, "Object %s does not exist — will create new.\n", destination); err != nil {
+			return err
+		}
 	} else {
 		destinationExists = true
 		sp.StopWithMessage(fmt.Sprintf("✓ Downloaded %s", destination))
@@ -179,31 +188,47 @@ func runCopy(ctx context.Context, sourceClient, destinationClient storage.Client
 	metadataDiff, metadataTooLarge := diff.Generate(string(destinationMetaYAML), string(sourceMetaYAML), "destination metadata", "source metadata")
 
 	if destinationExists && !contentDifferent && metadataDiff == "" && !metadataTooLarge {
-		fmt.Fprintln(out, "No changes detected. Skipping copy.")
+		if err := writeCopyStatus(out, "No changes detected. Skipping copy.\n"); err != nil {
+			return err
+		}
 		return nil
 	}
 
-	fmt.Fprintf(out, "\nSource: %s\nDestination: %s\n\n", source, destination)
+	if err := writeCopyStatus(out, "\nSource: %s\nDestination: %s\n\n", source, destination); err != nil {
+		return err
+	}
 	if binaryContent {
-		fmt.Fprintln(out, "Binary content; skipping content diff.")
+		if err := writeCopyStatus(out, "Binary content; skipping content diff.\n"); err != nil {
+			return err
+		}
 	} else if contentTooLarge {
-		fmt.Fprintln(out, "Content is too large to display a diff; skipping content diff.")
+		if err := writeCopyStatus(out, "Content is too large to display a diff; skipping content diff.\n"); err != nil {
+			return err
+		}
 	} else if contentDiff != "" {
 		diff.Print(out, contentDiff)
 	}
 	if metadataTooLarge {
-		fmt.Fprintln(out, "Metadata is too large to display a diff; skipping metadata diff.")
+		if err := writeCopyStatus(out, "Metadata is too large to display a diff; skipping metadata diff.\n"); err != nil {
+			return err
+		}
 	} else if metadataDiff != "" {
-		fmt.Fprint(out, "\nMetadata:\n")
+		if err := writeCopyStatus(out, "\nMetadata:\n"); err != nil {
+			return err
+		}
 		diff.Print(out, metadataDiff)
 	}
 
 	if f.dryRun {
-		fmt.Fprintln(out, "\n(dry-run: copy skipped)")
+		if err := writeCopyStatus(out, "\n(dry-run: copy skipped)\n"); err != nil {
+			return err
+		}
 		return nil
 	}
 	if !f.yes && !confirm(in, out, "Copy this object?") {
-		fmt.Fprintln(out, "Copy cancelled.")
+		if err := writeCopyStatus(out, "Copy cancelled.\n"); err != nil {
+			return err
+		}
 		return nil
 	}
 	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
