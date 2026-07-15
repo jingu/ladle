@@ -107,6 +107,7 @@ Key design notes:
 - `model` uses value receivers (Elm architecture). `context.Context` is stored in the struct because bubbletea `Cmd` closures need it.
 - `navigatedMsg` carries `bucket` to keep `model.bucket` in sync with `Browser.bucket`.
 - Filter applies recursively: expanded directories are shown if any descendant matches.
+- QuickLook preview (`Space` on a file) opens a full-width `previewView()` overlay (`previewMode`), reusing the version-preview state fields (`previewContent`/`previewScroll`/`previewLoading`/`previewError`) since version mode and preview mode are mutually exclusive. Every open increments `previewRequestID`, and only the matching asynchronous result is accepted. `tea.WithMouseCellMotion()` is enabled; `handleMouse` maps vertical wheel/trackpad input to tree-cursor navigation, QuickLook scrolling, or—within the rendered version Preview rectangle—version-preview scrolling. `renderVersionPrelude()` and ANSI hard-wrapping provide that rectangle's wrap-aware Y boundary. It ignores modal and filter-input modes. Content is fetched via `client.Download`; binary (`editor.IsBinary`) and files over `previewMaxBytes` (512KB) are refused without rendering.
 
 ## Dependencies
 
@@ -115,6 +116,7 @@ Key design notes:
 - `github.com/Azure/azure-sdk-for-go/sdk/storage/azblob` — Azure Blob Storage SDK (+ `azidentity` for Azure AD, `azcore` for error classification)
 - `github.com/charmbracelet/bubbletea` — TUI framework (Elm architecture)
 - `github.com/charmbracelet/lipgloss` — Terminal styling
+- `github.com/charmbracelet/x/ansi` — ANSI-aware terminal-cell wrapping for version Preview hit testing
 - `github.com/spf13/cobra` — CLI framework
 - `gopkg.in/yaml.v3` — YAML marshaling for metadata
 
@@ -127,3 +129,8 @@ go build -ldflags "-X main.version=1.0.0" ./cmd/ladle/
 ```
 
 Default is `dev`.
+
+## Pull Request Descriptions
+
+Write PR overview sections in Japanese and English. Use a bilingual heading such as
+`## 概要 / Summary`, and state each substantive change in both languages.

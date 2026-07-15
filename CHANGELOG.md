@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- QuickLook-style file preview in the TUI browser: press `Space` on a file to open a
+  full-width, scrollable preview overlay (mouse wheel/trackpad, `↑/↓`, `C-d`/`C-u`,
+  `g`/`G`; `Space`/`esc`/`q` to close). Binary files and files larger than 512KB are
+  refused with a message instead of being rendered. Works for `s3://`/`gs://`/`az://`
+  objects and `ssm://` parameters (SecureString values stay masked unless `--reveal`).
+- Version history: the mouse wheel / trackpad scrolls the selected version's content when
+  the pointer is over the right-side Preview pane; it never changes the left-side version
+  selection.
+- TUI browser: the mouse wheel / trackpad now moves the tree cursor through directory
+  entries, with the viewport following it for directories larger than the terminal.
 - `--append` flag for pipe-in: appends stdin to the existing value instead of replacing it
   (works for `s3://`/`gs://`/`az://` objects and `ssm://` parameters; a missing target is
   created). Appending to a SecureString requires `--reveal`.

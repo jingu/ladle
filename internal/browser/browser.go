@@ -154,7 +154,7 @@ func (b *Browser) Run(ctx context.Context, editFn EditFunc, opts ...RunOption) e
 		loading:              ro.versionsKey != "",
 	}
 
-	p := tea.NewProgram(m, tea.WithInput(b.in), tea.WithOutput(b.out))
+	p := tea.NewProgram(m, tea.WithInput(b.in), tea.WithOutput(b.out), tea.WithMouseCellMotion())
 	_, err = p.Run()
 	if err != nil {
 		return fmt.Errorf("running browser: %w", err)
