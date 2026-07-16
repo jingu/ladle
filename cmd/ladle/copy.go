@@ -5,6 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"os/signal"
+
 	"github.com/jingu/ladle/internal/apierror"
 	"github.com/jingu/ladle/internal/diff"
 	"github.com/jingu/ladle/internal/editor"
@@ -13,9 +17,6 @@ import (
 	"github.com/jingu/ladle/internal/storage"
 	"github.com/jingu/ladle/internal/uri"
 	"github.com/spf13/cobra"
-	"io"
-	"os"
-	"os/signal"
 )
 
 func newCopyCmd() *cobra.Command {
@@ -75,23 +76,33 @@ func runCopyCommand(ctx context.Context, sourceRaw, destinationRaw string, f *fl
 
 const maxCopyDiffBytes = 2 << 20
 
+var errCopyDiffLimit = errors.New("copy diff limit reached")
+
 type cappedBuffer struct {
-	bytes.Buffer
-	exceeded bool
+	buffer    bytes.Buffer
+	truncated bool
+}
+
+func (b *cappedBuffer) Len() int {
+	return b.buffer.Len()
+}
+
+func (b *cappedBuffer) String() string {
+	return b.buffer.String()
 }
 
 func (b *cappedBuffer) Write(p []byte) (int, error) {
-	remaining := maxCopyDiffBytes + 1 - b.Len()
+	remaining := maxCopyDiffBytes - b.Len()
 	if remaining <= 0 {
-		b.exceeded = true
-		return len(p), nil
+		b.truncated = true
+		return 0, errCopyDiffLimit
 	}
 	if len(p) > remaining {
-		b.exceeded = true
-		_, _ = b.Buffer.Write(p[:remaining])
-		return len(p), nil
+		b.truncated = true
+		n, _ := b.buffer.Write(p[:remaining])
+		return n, errCopyDiffLimit
 	}
-	return b.Buffer.Write(p)
+	return b.buffer.Write(p)
 }
 
 func readCopyDiffPrefix(r io.Reader) (string, bool, error) {
@@ -107,6 +118,13 @@ func writeCopyStatus(out io.Writer, format string, args ...any) error {
 		return fmt.Errorf("writing copy status: %w", err)
 	}
 	return nil
+}
+
+func openCopyConfirmation(in io.Reader, stdinPiped bool, openTTY func() (io.ReadCloser, error)) (io.ReadCloser, error) {
+	if stdinPiped {
+		return openTTY()
+	}
+	return io.NopCloser(in), nil
 }
 
 func runCopy(ctx context.Context, sourceClient, destinationClient storage.Client, source, destination *uri.URI, f *flags, in io.Reader, out io.Writer) error {
@@ -145,14 +163,19 @@ func runCopy(ctx context.Context, sourceClient, destinationClient storage.Client
 	destinationExists := false
 	err = destinationClient.Download(ctx, destination.Bucket, destination.Key, &destinationContent)
 	if err != nil {
-		sp.Stop()
-		classified := apierror.Classify(err)
-		var apiErr *apierror.Error
-		if !errors.As(classified, &apiErr) || apiErr.Kind != apierror.KindNotFound {
-			return fmt.Errorf("downloading destination %s: %w", destination, err)
-		}
-		if err := writeCopyStatus(out, "Object %s does not exist — will create new.\n", destination); err != nil {
-			return err
+		if errors.Is(err, errCopyDiffLimit) {
+			destinationExists = true
+			sp.StopWithMessage(fmt.Sprintf("✓ Downloaded %s for diff (truncated)", destination))
+		} else {
+			sp.Stop()
+			classified := apierror.Classify(err)
+			var apiErr *apierror.Error
+			if !errors.As(classified, &apiErr) || apiErr.Kind != apierror.KindNotFound {
+				return fmt.Errorf("downloading destination %s: %w", destination, err)
+			}
+			if err := writeCopyStatus(out, "Object %s does not exist — will create new.\n", destination); err != nil {
+				return err
+			}
 		}
 	} else {
 		destinationExists = true
@@ -170,9 +193,9 @@ func runCopy(ctx context.Context, sourceClient, destinationClient storage.Client
 	}
 	destinationBody := destinationContent.String()
 	binaryContent := editor.IsBinary([]byte(sourceContent)) || editor.IsBinary([]byte(destinationBody))
-	contentDifferent := sourceTooLarge || destinationContent.exceeded || sourceContent != destinationBody
+	contentDifferent := sourceTooLarge || destinationContent.truncated || sourceContent != destinationBody
 	contentDiff := ""
-	contentTooLarge := sourceTooLarge || destinationContent.exceeded
+	contentTooLarge := sourceTooLarge || destinationContent.truncated
 	if !binaryContent && !contentTooLarge {
 		contentDiff, contentTooLarge = diff.Generate(destinationBody, sourceContent, "destination", "source")
 		contentDifferent = contentDiff != "" || contentTooLarge
@@ -225,11 +248,22 @@ func runCopy(ctx context.Context, sourceClient, destinationClient storage.Client
 		}
 		return nil
 	}
-	if !f.yes && !confirm(in, out, "Copy this object?") {
-		if err := writeCopyStatus(out, "Copy cancelled.\n"); err != nil {
-			return err
+	if !f.yes {
+		confirmIn, err := openCopyConfirmation(
+			in,
+			!isTerminal(os.Stdin),
+			func() (io.ReadCloser, error) { return os.Open("/dev/tty") },
+		)
+		if err != nil {
+			return fmt.Errorf("cannot open terminal for confirmation (use --yes to skip): %w", err)
 		}
-		return nil
+		defer func() { _ = confirmIn.Close() }()
+		if !confirm(confirmIn, out, "Copy this object?") {
+			if err := writeCopyStatus(out, "Copy cancelled.\n"); err != nil {
+				return err
+			}
+			return nil
+		}
 	}
 	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
 		return fmt.Errorf("rewinding temporary copy file: %w", err)

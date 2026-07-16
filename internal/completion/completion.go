@@ -98,6 +98,12 @@ _ladle_completions() {
             ;;
     esac
 
+    if [[ "${COMP_WORDS[1]}" == "cp" && "$cur" != -* ]]; then
+        local schemes="s3:// gs:// az:// r2://"
+        COMPREPLY=( $(compgen -W "${schemes}" -- "${cur}") )
+        return 0
+    fi
+
     if [[ "$cur" == -* ]]; then
         COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
         return 0
@@ -193,7 +199,12 @@ _ladle_uri() {
             compadd -S '/' -q -- ${buckets[@]/#/${scheme}://}
         fi
     else
-        compadd -S '://' -- s3 gs az r2 ssm
+        local -a schemes
+        schemes=(s3 gs az r2)
+        if [[ "${words[2]}" != "cp" ]]; then
+            schemes+=(ssm)
+        fi
+        compadd -S '://' -- $schemes
     fi
 }
 
@@ -258,7 +269,11 @@ function __ladle_complete_uri
             end
         end
     else
-        printf '%s\n' 's3://' 'gs://' 'az://' 'r2://' 'ssm://'
+        set -l schemes 's3://' 'gs://' 'az://' 'r2://' 'ssm://'
+        if contains -- cp $tokens
+            set schemes 's3://' 'gs://' 'az://' 'r2://'
+        end
+        printf '%s\n' $schemes
     end
 end
 
