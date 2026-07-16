@@ -16,11 +16,11 @@ func TestGeneratedCompletionIncludesCopyAndURICompletion(t *testing.T) {
 			name:  "bash",
 			shell: ShellBash,
 			contains: []string{
-				"cp skill s3:// gs:// az:// r2:// ssm://",
+				"cp skill s3:// gs:// az:// ssm://",
 				`"$cur" != *://*`,
 				`--complete-path`,
 				`"${COMP_WORDS[1]}" == "cp"`,
-				`schemes="s3:// gs:// az:// r2://"`,
+				`schemes="s3:// gs:// az://"`,
 			},
 		},
 		{
@@ -75,5 +75,19 @@ func TestBashCompletionChecksOptionValuesBeforeCopyURIs(t *testing.T) {
 	}
 	if optionValues > copyURIs {
 		t.Error("copy URI completion runs before option-value completion")
+	}
+}
+
+func TestGeneratedCompletionsExcludeUnsupportedR2(t *testing.T) {
+	for _, shell := range []Shell{ShellBash, ShellZsh, ShellFish} {
+		t.Run(string(shell), func(t *testing.T) {
+			var script bytes.Buffer
+			if err := Generate(&script, shell); err != nil {
+				t.Fatalf("Generate(%q): %v", shell, err)
+			}
+			if strings.Contains(script.String(), "r2://") {
+				t.Errorf("generated %s completion advertises unsupported r2://", shell)
+			}
+		})
 	}
 }

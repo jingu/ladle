@@ -38,7 +38,7 @@ _ladle_completions() {
     prev="${COMP_WORDS[COMP_CWORD-1]}"
     cmd="${COMP_WORDS[0]}"
     opts="--meta --versions --editor --profile --region --account --project --endpoint-url --no-sign-request --yes --force --dry-run --help --version"
-    commands="cp skill s3:// gs:// az:// r2:// ssm://"
+    commands="cp skill s3:// gs:// az:// ssm://"
 
     if [[ "${COMP_CWORD}" -eq 1 && "$cur" != *://* && "$cur" != -* ]]; then
         COMPREPLY=( $(compgen -W "${commands}" -- "${cur}") )
@@ -99,7 +99,7 @@ _ladle_completions() {
     esac
 
     if [[ "${COMP_WORDS[1]}" == "cp" && "$cur" != -* ]]; then
-        local schemes="s3:// gs:// az:// r2://"
+        local schemes="s3:// gs:// az://"
         COMPREPLY=( $(compgen -W "${schemes}" -- "${cur}") )
         return 0
     fi
@@ -149,7 +149,6 @@ _ladle() {
                 's3://:Amazon S3 URI'
                 'gs://:Google Cloud Storage URI'
                 'az://:Azure Blob Storage URI'
-                'r2://:Cloudflare R2 URI'
                 'ssm://:AWS Systems Manager Parameter URI'
             )
             _describe -t commands 'ladle command' commands
@@ -200,7 +199,7 @@ _ladle_uri() {
         fi
     else
         local -a schemes
-        schemes=(s3 gs az r2)
+        schemes=(s3 gs az)
         if [[ "${words[2]}" != "cp" ]]; then
             schemes+=(ssm)
         fi
@@ -269,9 +268,9 @@ function __ladle_complete_uri
             end
         end
     else
-        set -l schemes 's3://' 'gs://' 'az://' 'r2://' 'ssm://'
+        set -l schemes 's3://' 'gs://' 'az://' 'ssm://'
         if contains -- cp $tokens
-            set schemes 's3://' 'gs://' 'az://' 'r2://'
+            set schemes 's3://' 'gs://' 'az://'
         end
         printf '%s\n' $schemes
     end

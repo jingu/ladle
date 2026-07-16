@@ -18,9 +18,11 @@ func TestRunCopyCopiesContentAndMetadata(t *testing.T) {
 	source := mustParse(t, "s3://source-bucket/path/source.json")
 	destination := mustParse(t, "s3://destination-bucket/path/destination.json")
 	wantMeta := &storage.ObjectMetadata{
-		ContentType:  "application/json",
-		CacheControl: "max-age=60",
-		Metadata:     map[string]string{"environment": "test"},
+		ContentType:        "application/json",
+		CacheControl:       "max-age=60",
+		ContentEncoding:    "gzip",
+		ContentDisposition: "attachment; filename=config.json",
+		Metadata:           map[string]string{"environment": "test"},
 	}
 	sourceClient.PutObject(source.Bucket, source.Key, []byte(`{"enabled":true}`), wantMeta)
 	destinationClient.PutObject(destination.Bucket, destination.Key, []byte(`{"enabled":false}`), &storage.ObjectMetadata{ContentType: "text/plain"})
@@ -46,6 +48,12 @@ func TestRunCopyCopiesContentAndMetadata(t *testing.T) {
 	}
 	if got, want := gotMeta.CacheControl, wantMeta.CacheControl; got != want {
 		t.Errorf("CacheControl = %q, want %q", got, want)
+	}
+	if got, want := gotMeta.ContentEncoding, wantMeta.ContentEncoding; got != want {
+		t.Errorf("ContentEncoding = %q, want %q", got, want)
+	}
+	if got, want := gotMeta.ContentDisposition, wantMeta.ContentDisposition; got != want {
+		t.Errorf("ContentDisposition = %q, want %q", got, want)
 	}
 	if got, want := gotMeta.Metadata["environment"], "test"; got != want {
 		t.Errorf("Metadata[environment] = %q, want %q", got, want)
