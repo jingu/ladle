@@ -19,7 +19,7 @@ func TestGeneratedCompletionIncludesCopyAndURICompletion(t *testing.T) {
 				"cp skill s3:// gs:// az:// ssm://",
 				`"$cur" != *://*`,
 				`--complete-path`,
-				`"${COMP_WORDS[1]}" == "cp"`,
+				`for word in "${COMP_WORDS[@]:1}"`,
 				`schemes="s3:// gs:// az://"`,
 			},
 		},
@@ -31,7 +31,7 @@ func TestGeneratedCompletionIncludesCopyAndURICompletion(t *testing.T) {
 				`"${words[CURRENT]}" == *://*`,
 				"_ladle_uri",
 				"ssm://:AWS Systems Manager Parameter URI",
-				`if [[ "${words[2]}" != "cp" ]]; then`,
+				`for word in "${words[@]}"`,
 			},
 		},
 		{
@@ -69,7 +69,7 @@ func TestBashCompletionChecksOptionValuesBeforeCopyURIs(t *testing.T) {
 	}
 	output := script.String()
 	optionValues := strings.Index(output, `case "${prev}" in`)
-	copyURIs := strings.Index(output, `"${COMP_WORDS[1]}" == "cp"`)
+	copyURIs := strings.Index(output, `for word in "${COMP_WORDS[@]:1}"`)
 	if optionValues < 0 || copyURIs < 0 {
 		t.Fatalf("generated bash completion is missing option or copy URI handling")
 	}

@@ -98,7 +98,14 @@ _ladle_completions() {
             ;;
     esac
 
-    if [[ "${COMP_WORDS[1]}" == "cp" && "$cur" != -* ]]; then
+    local is_copy=false word
+    for word in "${COMP_WORDS[@]:1}"; do
+        if [[ "$word" == "cp" ]]; then
+            is_copy=true
+            break
+        fi
+    done
+    if [[ "$is_copy" == true && "$cur" != -* ]]; then
         local schemes="s3:// gs:// az://"
         COMPREPLY=( $(compgen -W "${schemes}" -- "${cur}") )
         return 0
@@ -199,8 +206,16 @@ _ladle_uri() {
         fi
     else
         local -a schemes
+        local -i is_copy=0
+        local word
+        for word in "${words[@]}"; do
+            if [[ "$word" == "cp" ]]; then
+                is_copy=1
+                break
+            fi
+        done
         schemes=(s3 gs az)
-        if [[ "${words[2]}" != "cp" ]]; then
+        if (( ! is_copy )); then
             schemes+=(ssm)
         fi
         compadd -S '://' -- $schemes
