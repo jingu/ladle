@@ -113,6 +113,20 @@ echo "$(date) deployed" | ladle --append --yes s3://bucket/path/deploy.log
 For `ssm://`, `--append` needs the current value, so appending to a SecureString
 requires `--reveal`.
 
+## Copy an object
+
+`ladle cp` copies an object only after the source has downloaded completely. It copies the body and standard metadata (`Content-Type`, `Cache-Control`, `Content-Encoding`, `Content-Disposition`, and user metadata). It does not copy provider-specific ACLs, storage class, tags, retention settings, or encryption keys.
+
+```bash
+# Preview without changing the destination.
+ladle cp --dry-run s3://source-bucket/path/config.json s3://destination-bucket/path/config.json
+
+# Only after the user approves this specific copy.
+ladle cp --yes s3://source-bucket/path/config.json s3://destination-bucket/path/config.json
+```
+
+The endpoints may use different supported object-storage schemes. `cp` does not support `ssm://`; binary content is copied but its content diff is skipped.
+
 ## Object metadata (YAML)
 
 Read metadata as YAML:
