@@ -31,7 +31,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.26.5" # GO-2026-5856 (crypto/tls) fixed in 1.26.5
+          go-version: "1.26.6" # GO-2026-6088..6218, GO-2026-5972, GO-2026-5026 (stdlib) fixed in 1.26.6
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7
