@@ -551,7 +551,7 @@ func TestRunFileEdit_MissingBucketIsNotACreate(t *testing.T) {
 	if !errors.Is(err, boom) {
 		t.Fatalf("expected the NoSuchBucket error to surface, got %v", err)
 	}
-	if _, err := c.MockClient.HeadObject(ctx, "typo-bucket", "key.txt"); err == nil {
+	if _, err := c.HeadObject(ctx, "typo-bucket", "key.txt"); err == nil {
 		t.Error("nothing should have been created for a missing bucket")
 	}
 }

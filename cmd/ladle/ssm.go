@@ -506,15 +506,15 @@ var paramTypes = []string{"String", "StringList", "SecureString"}
 // the direct-URI counterpart of the browser's choice popup, used when --type
 // was not given; an empty answer takes the default (String).
 func promptParamType(sc *bufio.Scanner, out io.Writer) (string, error) {
-	fmt.Fprintln(out, "\nParameter type:")
+	_, _ = fmt.Fprintln(out, "\nParameter type:")
 	for i, t := range paramTypes {
-		fmt.Fprintf(out, "  %d) %s\n", i+1, t)
+		_, _ = fmt.Fprintf(out, "  %d) %s\n", i+1, t)
 	}
 	// Re-ask on a bad answer rather than returning: by this point the caller
 	// holds a value the user has already typed, and a slip on a menu is no
 	// reason to make them type it again. Only unreadable input (EOF) gives up.
 	for {
-		fmt.Fprintf(out, "Select [1-%d, default 1]: ", len(paramTypes))
+		_, _ = fmt.Fprintf(out, "Select [1-%d, default 1]: ", len(paramTypes))
 		if !sc.Scan() {
 			return "", fmt.Errorf("no parameter type selected")
 		}
@@ -524,7 +524,7 @@ func promptParamType(sc *bufio.Scanner, out io.Writer) (string, error) {
 		}
 		n, err := strconv.Atoi(answer)
 		if err != nil || n < 1 || n > len(paramTypes) {
-			fmt.Fprintf(out, "Invalid selection %q — enter a number from 1 to %d.\n", answer, len(paramTypes))
+			_, _ = fmt.Fprintf(out, "Invalid selection %q — enter a number from 1 to %d.\n", answer, len(paramTypes))
 			continue
 		}
 		return paramTypes[n-1], nil
@@ -535,7 +535,7 @@ func promptParamType(sc *bufio.Scanner, out io.Writer) (string, error) {
 // empty answer means "no description", so unlike the type there is nothing to
 // fail on and EOF is not an error.
 func promptDescription(sc *bufio.Scanner, out io.Writer) string {
-	fmt.Fprint(out, "Description (optional, press enter to skip): ")
+	_, _ = fmt.Fprint(out, "Description (optional, press enter to skip): ")
 	if !sc.Scan() {
 		return ""
 	}
@@ -549,7 +549,7 @@ func printDescriptionChange(out io.Writer, before, after string) {
 	if before == after {
 		return
 	}
-	fmt.Fprintf(out, "Description: %s -> %s\n", quoteOrNone(before), quoteOrNone(after))
+	_, _ = fmt.Fprintf(out, "Description: %s -> %s\n", quoteOrNone(before), quoteOrNone(after))
 }
 
 func quoteOrNone(s string) string {
