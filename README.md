@@ -59,6 +59,33 @@ Uploading to s3://myapp/config.json ...
 Done.
 ```
 
+### Create a new file
+
+Point ladle at a key that does not exist yet and the editor opens on an empty
+buffer; saving creates the object.
+
+```
+$ ladle s3://myapp/newfile.json
+s3://myapp/newfile.json does not exist — creating new file.
+Temp file: /tmp/ladle-123/newfile.json
+
+  (your editor opens, you type the content, save and close)
+
+File: s3://myapp/newfile.json
+
+--- empty
++++ new
+@@ -1,0 +1,1 @@
++{"hello": "world"}
+
+Create file? [y/N]: y
+Creating s3://myapp/newfile.json ...
+Done.
+```
+
+Quitting the editor without saving creates nothing. Content-Type is detected
+from the key's extension.
+
 ### Edit metadata
 
 ```
@@ -172,7 +199,7 @@ $ ladle s3://myapp/
 - `Space` on a file to open a QuickLook-style preview (scroll with the mouse wheel or trackpad, `↑/↓`, `C-d`/`C-u`, `g`/`G`; `Space`/`esc`/`q` to close). Binary files and files over 512KB are not rendered.
 - `→` on a file to open the context menu
 - `-` to go up a directory
-- `n` to create a new file in the current directory (opens your editor on an empty buffer). For `ssm://`, an arrow-key popup lets you pick the parameter type (String / StringList / SecureString) first, defaulting to `--type`.
+- `n` to create a new file in the current directory (opens your editor on an empty buffer). For `ssm://`, an arrow-key popup lets you pick the parameter type (String / StringList / SecureString) first, defaulting to `--type`, and an optional description is asked for after you save.
 
 #### Context menu
 
@@ -264,7 +291,16 @@ ladle ssm:///myapp/prod/db-url
 ladle ssm:///myapp/prod/db-url > value.txt          # read value to stdout
 echo -n 'postgres://new/db' | ladle --yes ssm:///myapp/prod/db-url
 
-# Create a new parameter (defaults to String; use --type for others)
+# Create a new parameter in your editor — type and description are asked for
+# after you save (the description is optional; press enter to skip)
+ladle ssm:///myapp/prod/api-token
+# ...or supply them up front, skipping the prompts
+ladle --type SecureString --description 'Fastly API key' ssm:///myapp/prod/api-token
+
+# --description also applies to an existing parameter, unlike --type
+ladle --description 'primary database URL' ssm:///myapp/prod/db-url
+
+# Create a new parameter from a pipe (defaults to String; use --type for others)
 echo -n 's3cret' | ladle --yes --type SecureString ssm:///myapp/prod/api-token
 
 # List a path (directories keep a trailing slash); --recursive for the whole tree
@@ -292,6 +328,12 @@ ladle --reveal ssm:///myapp/prod/db-password > secret # decrypt to stdout
 
 Notes:
 - On write, the original KMS key (`keyId`) and other attributes are preserved.
+- `--description` is the exception: unlike `--type`, a description can be changed
+  after creation, so the flag applies to every write, new or existing. Leaving it
+  off keeps the current description; clearing one goes through `--meta`, where the
+  YAML is the authority on every attribute (and `--description` is ignored). It names
+  the parameter on the command line, so it is ignored (with a note) when the URI opens
+  the browser, which acts on whichever parameter the cursor is on.
 - Editing a SecureString's metadata re-writes the parameter (SSM has no
   metadata-only API), so `--meta` on a SecureString also needs `--reveal`.
 - A SecureString value can still be updated non-interactively without `--reveal`
@@ -411,6 +453,7 @@ Use `--endpoint-url` to target the Azurite emulator.
 | `--reveal` | | Decrypt and expose SecureString values (`ssm://`) |
 | `--recursive` | | List parameters recursively (`ssm://`) |
 | `--type` | | Type when creating a new `ssm://` parameter (String\|StringList\|SecureString) |
+| `--description` | | Description to set when writing an `ssm://` parameter (empty keeps the current one) |
 | `--profile` | | AWS named profile |
 | `--region` | | AWS region |
 | `--account` | | Azure storage account name (or `AZURE_STORAGE_ACCOUNT`) |

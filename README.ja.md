@@ -59,6 +59,33 @@ Uploading to s3://myapp/config.json ...
 Done.
 ```
 
+### 新しいファイルを作成
+
+存在しないキーを指定すると、空のバッファでエディタが開きます。保存すると
+オブジェクトが作成されます。
+
+```
+$ ladle s3://myapp/newfile.json
+s3://myapp/newfile.json does not exist — creating new file.
+Temp file: /tmp/ladle-123/newfile.json
+
+  （エディタが開き、内容を入力して保存・終了）
+
+File: s3://myapp/newfile.json
+
+--- empty
++++ new
+@@ -1,0 +1,1 @@
++{"hello": "world"}
+
+Create file? [y/N]: y
+Creating s3://myapp/newfile.json ...
+Done.
+```
+
+保存せずにエディタを終了した場合は何も作成されません。Content-Type はキーの
+拡張子から判定されます。
+
 ### メタデータを編集
 
 ```
@@ -158,7 +185,7 @@ $ ladle s3://myapp/
 - ファイル上で `Space` を押すと QuickLook 風のプレビューが開く（マウスホイール／トラックパッド、`↑/↓`・`C-d`/`C-u`・`g`/`G` でスクロール、`Space`/`esc`/`q` で閉じる）。バイナリと 512KB を超えるファイルは表示しません。
 - ファイル上で `→` でコンテキストメニューを開く
 - `-` で上のディレクトリへ
-- `n` で現在のディレクトリに新規ファイルを作成（空のバッファでエディタが開く）。`ssm://` では先に上下キーのポップアップでパラメータ型（String / StringList / SecureString）を選択します（既定は `--type`）。
+- `n` で現在のディレクトリに新規ファイルを作成（空のバッファでエディタが開く）。`ssm://` では先に上下キーのポップアップでパラメータ型（String / StringList / SecureString）を選択し（既定は `--type`）、保存後に任意の説明を入力できます。
 
 #### コンテキストメニュー
 
@@ -247,7 +274,16 @@ ladle ssm:///myapp/prod/db-url
 ladle ssm:///myapp/prod/db-url > value.txt          # 値を標準出力へ
 echo -n 'postgres://new/db' | ladle --yes ssm:///myapp/prod/db-url
 
-# 新規パラメータの作成（既定は String、他の型は --type で指定）
+# エディタで新規パラメータを作成（型と説明は保存後に聞かれる。
+# 説明は任意で、Enter で省略できる）
+ladle ssm:///myapp/prod/api-token
+# ...先に指定しておけばプロンプトは出ない
+ladle --type SecureString --description 'Fastly API key' ssm:///myapp/prod/api-token
+
+# --type と違い、--description は既存パラメータにも効く
+ladle --description 'primary database URL' ssm:///myapp/prod/db-url
+
+# パイプで新規パラメータを作成（既定は String、他の型は --type で指定）
 echo -n 's3cret' | ladle --yes --type SecureString ssm:///myapp/prod/api-token
 
 # パス一覧（ディレクトリは末尾 / 付き）。--recursive で全階層
@@ -272,6 +308,7 @@ ladle --reveal ssm:///myapp/prod/db-password > secret # 復号して標準出力
 
 補足:
 - 書き込み時、元の KMS キー（`keyId`）などの属性は保持されます。
+- `--description` だけは例外です。`--type` と違い説明は作成後も変更できるため、新規・既存を問わず書き込みのたびに適用されます。指定しなければ現在の説明を維持します。説明を消す場合は `--meta` を使ってください（`--meta` では YAML が全属性の唯一の権威となり、`--description` は無視されます）。コマンドラインで名指ししたパラメータに対するフラグなので、URI がブラウザを開く場合は無視されます（カーソル位置の任意のパラメータを操作するため。その旨の注意書きが出ます）。
 - SecureString のメタデータ編集はパラメータの再書き込みを伴う（SSM にメタデータ専用 API がない）ため、`--meta` でも `--reveal` が必要です。
 - SecureString の値更新は、`--yes` で（平文の）diff を省けば `--reveal` なしでも可能です（例: `echo -n "$SECRET" | ladle --yes ssm:///myapp/prod/db-password`）。
 - SecureString への `--append` は現在値を読み取って先頭に連結する必要があるため、`--yes` を付けても `--reveal` が必須です。
@@ -373,6 +410,7 @@ Azurite エミュレータを使う場合は `--endpoint-url` を指定します
 | `--reveal` | | SecureString の値を復号して露出（`ssm://`） |
 | `--recursive` | | パラメータを再帰的に一覧（`ssm://`） |
 | `--type` | | 新規 `ssm://` パラメータ作成時の型（String\|StringList\|SecureString） |
+| `--description` | | `ssm://` パラメータ書き込み時に設定する説明（空なら現在の説明を維持） |
 | `--profile` | | AWS named profile |
 | `--region` | | AWSリージョン |
 | `--account` | | Azure ストレージアカウント名（または `AZURE_STORAGE_ACCOUNT`） |

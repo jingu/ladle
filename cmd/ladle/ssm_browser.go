@@ -175,6 +175,8 @@ func (a *ssmStorageAdapter) ListBuckets(context.Context) ([]string, error) {
 func runSSMBrowser(ctx context.Context, client ssm.Client, u *uri.URI, f *flags, extraOpts ...browser.RunOption) error {
 	adapter := &ssmStorageAdapter{client: client, reveal: f.reveal}
 
+	f = browserFlags(f)
+
 	// The browser addresses parameters with S3-style keys (no leading slash).
 	bu := &uri.URI{Scheme: uri.SchemeSSM, Bucket: "", Key: strings.TrimPrefix(u.Key, "/"), Raw: u.Raw}
 	b := browser.New(adapter, bu, os.Stdin, os.Stderr, version)
@@ -193,7 +195,6 @@ func runSSMBrowser(ctx context.Context, client ssm.Client, u *uri.URI, f *flags,
 	// New parameters pick a type in the browser; default the highlight to the
 	// launch --type (String when unset). An invalid --type fails fast here, the
 	// same as the pipe-in / edit flows, rather than being silently ignored.
-	paramTypes := []string{"String", "StringList", "SecureString"}
 	defType, err := newParamType(f.paramType)
 	if err != nil {
 		return err
@@ -215,6 +216,21 @@ func runSSMBrowser(ctx context.Context, client ssm.Client, u *uri.URI, f *flags,
 	}
 	opts = append(opts, extraOpts...)
 	return b.Run(ctx, editFn, opts...)
+}
+
+// browserFlags strips the flags that name one parameter on the command line,
+// returning a copy the browser's callbacks can safely reuse. The browser acts on
+// whatever the cursor is on, so carrying --description in would rewrite the
+// description of an unrelated parameter — silently, since the restore diff shows
+// the value alone. Returns f unchanged when there is nothing to strip.
+func browserFlags(f *flags) *flags {
+	if f.description == "" {
+		return f
+	}
+	fmt.Fprintln(os.Stderr, "Note: --description is ignored in the browser; it applies to a parameter named on the command line.")
+	bf := *f
+	bf.description = ""
+	return &bf
 }
 
 // runSSMDownload writes a parameter's value to a local file (SecureString gated
@@ -252,6 +268,7 @@ func runSSMRestoreVersion(ctx context.Context, client ssm.Client, name, versionI
 	if md.IsSecure() && !f.reveal {
 		return "", fmt.Errorf("%s is a SecureString; re-run with --reveal to restore a version", display)
 	}
+	applyDescription(md, f)
 
 	sp := spinner.New(os.Stderr, fmt.Sprintf("Fetching version %d of %s ...", v, display))
 	sp.Start()
@@ -286,7 +303,7 @@ func runSSMRestoreVersion(ctx context.Context, client ssm.Client, name, versionI
 		return msg, nil
 	}
 
-	return ssmPut(ctx, client, name, old.Value, md)
+	return ssmPut(ctx, client, name, old.Value, md, false)
 }
 
 // compile-time check that the adapter satisfies storage.Client.

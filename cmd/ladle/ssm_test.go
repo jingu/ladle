@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"io"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/jingu/ladle/internal/ssm"
@@ -287,5 +291,427 @@ func TestRunSSMEdit_StripsTrailingNewline(t *testing.T) {
 	}
 	if got := c.Params["/app/db-url"].Value; got != "postgres://new" {
 		t.Errorf("stored value = %q, want %q (trailing newline must be stripped)", got, "postgres://new")
+	}
+}
+
+func TestPromptParamType(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{name: "first choice", input: "1\n", want: "String"},
+		{name: "second choice", input: "2\n", want: "StringList"},
+		{name: "third choice", input: "3\n", want: "SecureString"},
+		{name: "empty takes the default", input: "\n", want: "String"},
+		{name: "surrounding space", input: "  3  \n", want: "SecureString"},
+		{name: "out of range", input: "4\n", wantErr: true},
+		{name: "not a number", input: "SecureString\n", wantErr: true},
+		{name: "no input", input: "", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sc := bufio.NewScanner(strings.NewReader(tt.input))
+			got, err := promptParamType(sc, io.Discard)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, got %q", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("promptParamType: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("type = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// With neither a popup choice nor --type, the type is asked for after the editor
+// closes, and the confirmation that follows still sees its own answer.
+func TestRunSSMNewFile_PromptsForTypeWhenUnset(t *testing.T) {
+	ctx := context.Background()
+	c := ssm.NewFake()
+	ed := writeFakeEditor(t, "printf 'topsecret' > \"$1\"\nexit 0\n")
+	withStdin(t, "3\n\ny\n") // 3) SecureString, no description, then confirm
+
+	f := &flags{editorCmd: ed}
+	if _, err := runSSMNewFile(ctx, c, "/app/token", f, ""); err != nil {
+		t.Fatalf("runSSMNewFile: %v", err)
+	}
+	p := c.Params["/app/token"]
+	if p == nil {
+		t.Fatal("parameter was not created")
+	}
+	if p.Type != "SecureString" {
+		t.Errorf("created type = %q, want SecureString (picked at the prompt)", p.Type)
+	}
+	if p.Value != "topsecret" {
+		t.Errorf("created value = %q, want %q", p.Value, "topsecret")
+	}
+}
+
+// --yes means "ask nothing", so an unset type takes the String default instead
+// of blocking on a prompt.
+func TestRunSSMNewFile_YesSkipsTypePrompt(t *testing.T) {
+	ctx := context.Background()
+	c := ssm.NewFake()
+	ed := writeFakeEditor(t, "printf 'v' > \"$1\"\nexit 0\n")
+
+	f := &flags{yes: true, editorCmd: ed}
+	if _, err := runSSMNewFile(ctx, c, "/app/plain", f, ""); err != nil {
+		t.Fatalf("runSSMNewFile: %v", err)
+	}
+	if p := c.Params["/app/plain"]; p == nil || p.Type != "String" {
+		t.Errorf("--yes with no --type should create a String, got %+v", p)
+	}
+}
+
+// An invalid --type must be rejected before the editor opens, so the user does
+// not type a value only to have the write fail afterwards.
+func TestRunSSMNewFile_RejectsInvalidFlagTypeBeforeEditor(t *testing.T) {
+	ctx := context.Background()
+	c := ssm.NewFake()
+	ed := writeFakeEditor(t, "printf 'v' > \"$1\"\nexit 1\n") // would fail if reached
+
+	f := &flags{yes: true, editorCmd: ed, paramType: "Bogus"}
+	_, err := runSSMNewFile(ctx, c, "/app/x", f, "")
+	if err == nil || !strings.Contains(err.Error(), "invalid --type") {
+		t.Fatalf("expected an invalid type error, got %v", err)
+	}
+	if len(c.Puts) != 0 {
+		t.Errorf("nothing should have been created, got %d puts", len(c.Puts))
+	}
+}
+
+// With --description unset the type prompt is followed by a description prompt,
+// and the answer lands on the created parameter.
+func TestRunSSMNewFile_PromptsForDescription(t *testing.T) {
+	ctx := context.Background()
+	c := ssm.NewFake()
+	ed := writeFakeEditor(t, "printf 'k' > \"$1\"\nexit 0\n")
+	withStdin(t, "3\nFastly API key\ny\n") // type, description, confirm
+
+	f := &flags{editorCmd: ed}
+	if _, err := runSSMNewFile(ctx, c, "/app/token", f, ""); err != nil {
+		t.Fatalf("runSSMNewFile: %v", err)
+	}
+	p := c.Params["/app/token"]
+	if p == nil {
+		t.Fatal("parameter was not created")
+	}
+	if p.Type != "SecureString" {
+		t.Errorf("created type = %q, want SecureString", p.Type)
+	}
+	if p.Metadata.Description != "Fastly API key" {
+		t.Errorf("description = %q, want %q", p.Metadata.Description, "Fastly API key")
+	}
+}
+
+// An empty answer at the description prompt means "no description", not an error.
+func TestRunSSMNewFile_EmptyDescriptionSkipped(t *testing.T) {
+	ctx := context.Background()
+	c := ssm.NewFake()
+	ed := writeFakeEditor(t, "printf 'k' > \"$1\"\nexit 0\n")
+	withStdin(t, "1\n\ny\n") // String, no description, confirm
+
+	f := &flags{editorCmd: ed}
+	if _, err := runSSMNewFile(ctx, c, "/app/plain", f, ""); err != nil {
+		t.Fatalf("runSSMNewFile: %v", err)
+	}
+	if p := c.Params["/app/plain"]; p == nil || p.Metadata.Description != "" {
+		t.Errorf("expected no description, got %+v", p)
+	}
+}
+
+// --description supplies the value, so the prompt is skipped entirely.
+func TestRunSSMNewFile_DescriptionFlagSkipsPrompt(t *testing.T) {
+	ctx := context.Background()
+	c := ssm.NewFake()
+	ed := writeFakeEditor(t, "printf 'k' > \"$1\"\nexit 0\n")
+	withStdin(t, "y\n") // only the confirmation is read
+
+	f := &flags{editorCmd: ed, paramType: "String", description: "from the flag"}
+	if _, err := runSSMNewFile(ctx, c, "/app/flagged", f, ""); err != nil {
+		t.Fatalf("runSSMNewFile: %v", err)
+	}
+	if p := c.Params["/app/flagged"]; p == nil || p.Metadata.Description != "from the flag" {
+		t.Errorf("description = %+v, want %q", p, "from the flag")
+	}
+}
+
+// --yes asks nothing, so an unset description stays empty.
+func TestRunSSMNewFile_YesSkipsDescriptionPrompt(t *testing.T) {
+	ctx := context.Background()
+	c := ssm.NewFake()
+	ed := writeFakeEditor(t, "printf 'k' > \"$1\"\nexit 0\n")
+
+	f := &flags{yes: true, editorCmd: ed}
+	if _, err := runSSMNewFile(ctx, c, "/app/quiet", f, ""); err != nil {
+		t.Fatalf("runSSMNewFile: %v", err)
+	}
+	if p := c.Params["/app/quiet"]; p == nil || p.Metadata.Description != "" {
+		t.Errorf("expected no description under --yes, got %+v", p)
+	}
+}
+
+// Unlike --type, --description applies to an existing parameter: a value edit
+// with the flag rewrites the description.
+func TestRunSSMEdit_DescriptionFlagOverwrites(t *testing.T) {
+	ctx := context.Background()
+	c := ssm.NewFake()
+	c.Set("/app/db-url", "postgres://old/db", "String", "")
+	c.Params["/app/db-url"].Metadata.Description = "stale"
+	ed := writeFakeEditor(t, "printf 'postgres://new/db' > \"$1\"\nexit 0\n")
+
+	f := &flags{yes: true, editorCmd: ed, description: "primary database URL"}
+	if _, err := runSSMEdit(ctx, c, "/app/db-url", f); err != nil {
+		t.Fatalf("runSSMEdit: %v", err)
+	}
+	if got := c.Params["/app/db-url"].Metadata.Description; got != "primary database URL" {
+		t.Errorf("description = %q, want %q", got, "primary database URL")
+	}
+}
+
+// Without the flag a value edit must keep the existing description rather than
+// dropping it: SSM has no metadata-only write, so every edit re-Puts.
+func TestRunSSMEdit_PreservesDescriptionWithoutFlag(t *testing.T) {
+	ctx := context.Background()
+	c := ssm.NewFake()
+	c.Set("/app/db-url", "postgres://old/db", "String", "")
+	c.Params["/app/db-url"].Metadata.Description = "keep me"
+	ed := writeFakeEditor(t, "printf 'postgres://new/db' > \"$1\"\nexit 0\n")
+
+	f := &flags{yes: true, editorCmd: ed}
+	if _, err := runSSMEdit(ctx, c, "/app/db-url", f); err != nil {
+		t.Fatalf("runSSMEdit: %v", err)
+	}
+	if got := c.Params["/app/db-url"].Metadata.Description; got != "keep me" {
+		t.Errorf("description = %q, want it preserved as %q", got, "keep me")
+	}
+}
+
+// A create must not be reported as an update, matching the S3 side's
+// "✓ Created". The message is also what the browser shows after `n`.
+func TestRunSSMNewFile_ReportsCreated(t *testing.T) {
+	ctx := context.Background()
+	c := ssm.NewFake()
+	ed := writeFakeEditor(t, "printf 'v' > \"$1\"\nexit 0\n")
+
+	f := &flags{yes: true, editorCmd: ed}
+	msg, err := runSSMNewFile(ctx, c, "/app/fresh", f, "String")
+	if err != nil {
+		t.Fatalf("runSSMNewFile: %v", err)
+	}
+	if !strings.Contains(msg, "Created") {
+		t.Errorf("message = %q, want it to report a creation", msg)
+	}
+}
+
+// Editing an existing parameter still reports an update.
+func TestRunSSMEdit_ReportsUpdated(t *testing.T) {
+	ctx := context.Background()
+	c := ssm.NewFake()
+	c.Set("/app/db-url", "old", "String", "")
+	ed := writeFakeEditor(t, "printf 'new' > \"$1\"\nexit 0\n")
+
+	f := &flags{yes: true, editorCmd: ed}
+	msg, err := runSSMEdit(ctx, c, "/app/db-url", f)
+	if err != nil {
+		t.Fatalf("runSSMEdit: %v", err)
+	}
+	if !strings.Contains(msg, "Updated") {
+		t.Errorf("message = %q, want it to report an update", msg)
+	}
+}
+
+// captureStderr redirects os.Stderr to a pipe for the duration of the test and
+// returns a reader for what was written. Needed where the code under test
+// writes to os.Stderr directly (spinners, prompts, recovery hints).
+func captureStderr(t *testing.T) func() string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := os.Stderr
+	os.Stderr = w
+
+	done := make(chan string, 1)
+	go func() {
+		var b strings.Builder
+		_, _ = io.Copy(&b, r)
+		done <- b.String()
+	}()
+
+	var out string
+	var once sync.Once
+	read := func() string {
+		once.Do(func() {
+			os.Stderr = orig
+			_ = w.Close()
+			out = <-done
+			_ = r.Close()
+		})
+		return out
+	}
+	t.Cleanup(func() { read() })
+	return read
+}
+
+// A --description change with an untouched value must still be written: the
+// no-op guard looks at the value alone, which used to drop the change silently.
+func TestRunSSMEdit_DescriptionOnlyChangeIsWritten(t *testing.T) {
+	ctx := context.Background()
+	c := ssm.NewFake()
+	c.Set("/app/db-url", "postgres://same", "String", "")
+	c.Params["/app/db-url"].Metadata.Description = "stale"
+	ed := writeFakeEditor(t, "exit 0\n") // leaves the value exactly as fetched
+
+	f := &flags{yes: true, editorCmd: ed, description: "primary database URL"}
+	if _, err := runSSMEdit(ctx, c, "/app/db-url", f); err != nil {
+		t.Fatalf("runSSMEdit: %v", err)
+	}
+	if len(c.Puts) != 1 {
+		t.Fatalf("expected 1 write, got %d", len(c.Puts))
+	}
+	p := c.Params["/app/db-url"]
+	if p.Metadata.Description != "primary database URL" {
+		t.Errorf("description = %q, want it updated", p.Metadata.Description)
+	}
+	if p.Value != "postgres://same" {
+		t.Errorf("value = %q, want it untouched", p.Value)
+	}
+}
+
+// The same via pipe-in: identical stdin plus a new description is a change.
+func TestRunSSMPipeIn_DescriptionOnlyChangeIsWritten(t *testing.T) {
+	ctx := context.Background()
+	c := ssm.NewFake()
+	c.Set("/app/db-url", "postgres://same", "String", "")
+	c.Params["/app/db-url"].Metadata.Description = "stale"
+	withStdin(t, "postgres://same")
+
+	f := &flags{yes: true, description: "primary database URL"}
+	if err := runSSMPipeIn(ctx, c, "/app/db-url", f); err != nil {
+		t.Fatalf("runSSMPipeIn: %v", err)
+	}
+	if len(c.Puts) != 1 {
+		t.Fatalf("expected 1 write, got %d", len(c.Puts))
+	}
+	if got := c.Params["/app/db-url"].Metadata.Description; got != "primary database URL" {
+		t.Errorf("description = %q, want it updated", got)
+	}
+}
+
+// With neither the value nor the description changed it is still a no-op.
+func TestRunSSMEdit_NoChangeStillSkips(t *testing.T) {
+	ctx := context.Background()
+	c := ssm.NewFake()
+	c.Set("/app/db-url", "postgres://same", "String", "")
+	ed := writeFakeEditor(t, "exit 0\n")
+
+	f := &flags{yes: true, editorCmd: ed}
+	msg, err := runSSMEdit(ctx, c, "/app/db-url", f)
+	if err != nil {
+		t.Fatalf("runSSMEdit: %v", err)
+	}
+	if !strings.Contains(msg, "No changes detected") {
+		t.Errorf("message = %q, want a no-op", msg)
+	}
+	if len(c.Puts) != 0 {
+		t.Errorf("expected no write, got %d", len(c.Puts))
+	}
+}
+
+// The pending description change must be visible before the confirmation, since
+// the diff shows the value alone.
+func TestRunSSMEdit_ShowsDescriptionChange(t *testing.T) {
+	ctx := context.Background()
+	c := ssm.NewFake()
+	c.Set("/app/db-url", "old", "String", "")
+	c.Params["/app/db-url"].Metadata.Description = "stale"
+	ed := writeFakeEditor(t, "printf 'new' > \"$1\"\nexit 0\n")
+	stderr := captureStderr(t)
+
+	f := &flags{yes: true, editorCmd: ed, description: "fresh"}
+	if _, err := runSSMEdit(ctx, c, "/app/db-url", f); err != nil {
+		t.Fatalf("runSSMEdit: %v", err)
+	}
+	if out := stderr(); !strings.Contains(out, `Description: "stale" -> "fresh"`) {
+		t.Errorf("stderr did not report the description change:\n%s", out)
+	}
+}
+
+// A value the user has already typed must survive a prompt that cannot be
+// answered: the temp file stays put and its path is reported, the way an editor
+// failure is handled.
+func TestCreateSSMParam_KeepsValueWhenTypePromptFails(t *testing.T) {
+	ctx := context.Background()
+	c := ssm.NewFake()
+	ed := writeFakeEditor(t, "printf 'topsecret' > \"$1\"\nexit 0\n")
+	withStdin(t, "") // EOF at the type prompt
+	stderr := captureStderr(t)
+
+	f := &flags{editorCmd: ed} // no --type, no --yes: the prompt runs
+	_, err := createSSMParam(ctx, c, "/app/token", f, "")
+	if err == nil {
+		t.Fatal("expected an error when the type prompt cannot be answered")
+	}
+	out := stderr()
+	if !strings.Contains(out, "Recovery:") {
+		t.Fatalf("no recovery hint in stderr:\n%s", out)
+	}
+	var saved string
+	for _, line := range strings.Split(out, "\n") {
+		if i := strings.Index(line, "Recovery: your value is saved at "); i >= 0 {
+			saved = strings.TrimSpace(line[i+len("Recovery: your value is saved at "):])
+		}
+	}
+	if saved == "" {
+		t.Fatalf("could not find the saved path in stderr:\n%s", out)
+	}
+	body, readErr := os.ReadFile(saved)
+	if readErr != nil {
+		t.Fatalf("temp file was removed despite the recovery hint: %v", readErr)
+	}
+	if string(body) != "topsecret" {
+		t.Errorf("recovered value = %q, want %q", body, "topsecret")
+	}
+	_ = os.RemoveAll(filepath.Dir(saved))
+}
+
+// A mistyped menu answer re-asks instead of throwing the typed value away.
+func TestPromptParamType_RetriesAfterInvalidAnswer(t *testing.T) {
+	sc := bufio.NewScanner(strings.NewReader("9\nnope\n3\n"))
+	got, err := promptParamType(sc, io.Discard)
+	if err != nil {
+		t.Fatalf("promptParamType: %v", err)
+	}
+	if got != "SecureString" {
+		t.Errorf("type = %q, want SecureString", got)
+	}
+}
+
+// The browser acts on whatever the cursor is on, so it must not inherit a
+// --description meant for a parameter named on the command line.
+func TestBrowserFlags_DropsDescription(t *testing.T) {
+	f := &flags{description: "for one parameter", reveal: true, paramType: "String"}
+	bf := browserFlags(f)
+
+	if bf.description != "" {
+		t.Errorf("browser flags kept description %q", bf.description)
+	}
+	if f.description != "for one parameter" {
+		t.Errorf("the caller's flags were mutated: %q", f.description)
+	}
+	if !bf.reveal || bf.paramType != "String" {
+		t.Errorf("unrelated flags were lost: %+v", bf)
+	}
+	if same := browserFlags(&flags{reveal: true}); same.description != "" || !same.reveal {
+		t.Errorf("nothing to strip should pass the flags through, got %+v", same)
 	}
 }

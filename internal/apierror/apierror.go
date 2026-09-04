@@ -100,8 +100,13 @@ func inspect(err error) (Kind, string, string) {
 	}
 
 	// Check GCS sentinel errors, which the SDK returns instead of a googleapi.Error.
-	if errors.Is(err, storage.ErrObjectNotExist) || errors.Is(err, storage.ErrBucketNotExist) {
-		return KindNotFound, "NotFound", err.Error()
+	// They map onto the S3 vocabulary so callers can tell a missing object from a
+	// missing bucket — both are KindNotFound, but only the former is a create target.
+	if errors.Is(err, storage.ErrObjectNotExist) {
+		return KindNotFound, "NoSuchKey", err.Error()
+	}
+	if errors.Is(err, storage.ErrBucketNotExist) {
+		return KindNotFound, "NoSuchBucket", err.Error()
 	}
 
 	// Check Google API errors (GCS). The Code field is the HTTP status code.
@@ -238,4 +243,26 @@ func hintFor(kind Kind) string {
 		return "Could not connect to the service. Check your network connection, proxy settings, and --endpoint-url if using a custom endpoint."
 	}
 	return ""
+}
+
+// objectNotFoundCodes are the KindNotFound codes that mean "this object is
+// missing" as opposed to "its bucket/container is missing". The list is an
+// allow-list on purpose: an unrecognized not-found stays outside it.
+var objectNotFoundCodes = map[string]bool{
+	"NoSuchKey":    true, // S3 GetObject, and the GCS ErrObjectNotExist sentinel
+	"BlobNotFound": true, // Azure
+}
+
+// IsObjectNotFound reports whether err means the object itself is absent.
+// Callers that turn "absent" into "create it here" must use this rather than
+// KindNotFound, which also covers NoSuchBucket / ContainerNotFound — a mistyped
+// bucket name would otherwise read as a brand-new object. It answers false for
+// any not-found it does not recognize, so an unknown code surfaces as an error
+// instead of silently starting a create.
+func IsObjectNotFound(err error) bool {
+	var ae *Error
+	if !errors.As(Classify(err), &ae) || ae.Kind != KindNotFound {
+		return false
+	}
+	return objectNotFoundCodes[ae.Code]
 }
