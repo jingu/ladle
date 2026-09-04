@@ -123,10 +123,12 @@ func runSSM(ctx context.Context, u *uri.URI, f *flags) error {
 	}
 	// A name with no parameter and no children is a create target: open the
 	// editor on an empty buffer instead of erroring out, mirroring the browser's
-	// "n" key and the pipe-in flow.
+	// "n" key and the pipe-in flow. The probe above already established absence,
+	// so this goes straight to createSSMParam rather than paying for a second
+	// Describe; the re-check just before writing still runs.
 	if notFound {
 		fmt.Fprintf(os.Stderr, "%s does not exist — creating new parameter.\n", ssmDisplay(name))
-		_, err = runSSMNewFile(ctx, client, name, f, "")
+		_, err = createSSMParam(ctx, client, name, f, "")
 		return err
 	}
 	_, err = runSSMEdit(ctx, client, name, f)

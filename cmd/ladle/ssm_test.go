@@ -715,3 +715,39 @@ func TestBrowserFlags_DropsDescription(t *testing.T) {
 		t.Errorf("nothing to strip should pass the flags through, got %+v", same)
 	}
 }
+
+// describeCountClient counts Describe calls so a redundant existence probe is
+// visible to a test.
+type describeCountClient struct {
+	*ssm.FakeClient
+	n int
+}
+
+func (c *describeCountClient) Describe(ctx context.Context, name string) (*ssm.Metadata, error) {
+	c.n++
+	return c.FakeClient.Describe(ctx, name)
+}
+
+// createSSMParam exists so a caller that has already proved the parameter
+// absent does not pay for a second Describe. Only the re-check just before
+// writing should remain; runSSMNewFile keeps the up-front check for callers
+// (the browser) that have not proved anything.
+func TestCreateSSMParam_SkipsRedundantExistenceProbe(t *testing.T) {
+	ed := writeFakeEditor(t, "printf 'v' > \"$1\"\nexit 0\n")
+
+	direct := &describeCountClient{FakeClient: ssm.NewFake()}
+	if _, err := createSSMParam(context.Background(), direct, "/app/a", &flags{yes: true, editorCmd: ed, paramType: "String"}, ""); err != nil {
+		t.Fatalf("createSSMParam: %v", err)
+	}
+	if direct.n != 1 {
+		t.Errorf("createSSMParam issued %d Describe calls, want 1 (the pre-write re-check only)", direct.n)
+	}
+
+	viaBrowser := &describeCountClient{FakeClient: ssm.NewFake()}
+	if _, err := runSSMNewFile(context.Background(), viaBrowser, "/app/b", &flags{yes: true, editorCmd: ed, paramType: "String"}, ""); err != nil {
+		t.Fatalf("runSSMNewFile: %v", err)
+	}
+	if viaBrowser.n != 2 {
+		t.Errorf("runSSMNewFile issued %d Describe calls, want 2 (up-front check plus re-check)", viaBrowser.n)
+	}
+}
