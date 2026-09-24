@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aws/smithy-go"
 	"github.com/jingu/ladle/internal/storage"
 	"github.com/jingu/ladle/internal/uri"
 )
@@ -489,5 +490,68 @@ func TestRunNewFile_EditorFails(t *testing.T) {
 	}
 	if _, err := m.HeadObject(ctx, "bucket", "nope.txt"); err == nil {
 		t.Error("no object should have been created after an editor failure")
+	}
+}
+
+// downloadErrClient wraps a MockClient but forces Download to fail with a
+// non-NotFound error, simulating a permission/throttling/network failure.
+type downloadErrClient struct {
+	*storage.MockClient
+	err error
+}
+
+func (c downloadErrClient) Download(context.Context, string, string, io.Writer) error {
+	return c.err
+}
+
+// A missing object is a create target in interactive edit mode: the editor opens
+// on an empty buffer and saving creates the object.
+func TestRunFileEdit_CreatesMissingObject(t *testing.T) {
+	ctx := context.Background()
+	m := storage.NewMockClient()
+	ed := writeFakeEditor(t, "printf 'brand new' > \"$1\"\nexit 0\n")
+
+	f := &flags{yes: true, editorCmd: ed}
+	if _, err := runFileEdit(ctx, m, mustParse(t, "s3://bucket/fresh.txt"), f); err != nil {
+		t.Fatalf("runFileEdit: %v", err)
+	}
+	var got bytes.Buffer
+	if err := m.Download(ctx, "bucket", "fresh.txt", &got); err != nil {
+		t.Fatalf("download: %v", err)
+	}
+	if got.String() != "brand new" {
+		t.Errorf("created content = %q, want %q", got.String(), "brand new")
+	}
+}
+
+// A non-NotFound Download failure must surface, not be mistaken for "absent"
+// and silently turned into a create.
+func TestRunFileEdit_DownloadErrorNotSwallowed(t *testing.T) {
+	ctx := context.Background()
+	boom := errors.New("access denied")
+	c := downloadErrClient{MockClient: storage.NewMockClient(), err: boom}
+
+	f := &flags{yes: true, editorCmd: writeFakeEditor(t, "exit 0\n")}
+	if _, err := runFileEdit(ctx, c, mustParse(t, "s3://bucket/x.txt"), f); !errors.Is(err, boom) {
+		t.Fatalf("expected the Download error to surface, got %v", err)
+	}
+}
+
+// A missing bucket must NOT be mistaken for a missing object: it is almost
+// always a typo, and turning it into a create would only surface the mistake
+// after the user has typed out a whole file.
+func TestRunFileEdit_MissingBucketIsNotACreate(t *testing.T) {
+	ctx := context.Background()
+	boom := &smithy.GenericAPIError{Code: "NoSuchBucket", Message: "bucket gone"}
+	c := downloadErrClient{MockClient: storage.NewMockClient(), err: boom}
+
+	// An editor that would fail loudly if the create path were entered.
+	f := &flags{yes: true, editorCmd: writeFakeEditor(t, "printf 'oops' > \"$1\"\nexit 0\n")}
+	_, err := runFileEdit(ctx, c, mustParse(t, "s3://typo-bucket/key.txt"), f)
+	if !errors.Is(err, boom) {
+		t.Fatalf("expected the NoSuchBucket error to surface, got %v", err)
+	}
+	if _, err := c.HeadObject(ctx, "typo-bucket", "key.txt"); err == nil {
+		t.Error("nothing should have been created for a missing bucket")
 	}
 }

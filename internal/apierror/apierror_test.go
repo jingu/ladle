@@ -282,3 +282,29 @@ func TestError_Unwrap(t *testing.T) {
 		t.Error("Unwrap did not return the original cause")
 	}
 }
+
+func TestIsObjectNotFound(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"s3 missing key", &mockAPIError{code: "NoSuchKey", message: "key gone"}, true},
+		{"azure missing blob", &mockAPIError{code: "BlobNotFound", message: "blob gone"}, true},
+		{"s3 missing bucket", &mockAPIError{code: "NoSuchBucket", message: "bucket gone"}, false},
+		{"azure missing container", &mockAPIError{code: "ContainerNotFound", message: "container gone"}, false},
+		{"gcs missing object", fmt.Errorf("downloading: %w", storage.ErrObjectNotExist), true},
+		{"gcs missing bucket", fmt.Errorf("downloading: %w", storage.ErrBucketNotExist), false},
+		{"unrecognized not-found stays out", &mockAPIError{code: "NoSuchVersion", message: "gone"}, false},
+		{"permission error", &mockAPIError{code: "AccessDenied", message: "nope"}, false},
+		{"plain error", errors.New("boom"), false},
+		{"nil", nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsObjectNotFound(tt.err); got != tt.want {
+				t.Errorf("IsObjectNotFound(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}

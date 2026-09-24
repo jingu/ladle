@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Editing a URI that does not exist yet now creates it: the editor opens on an empty
+  buffer and saving uploads the new object (`s3://`/`gs://`/`az://`) or puts the new
+  parameter (`ssm://`), instead of failing with "not found". Only a genuine not-found
+  falls through — a permission or network failure still aborts — and quitting the editor
+  without saving creates nothing. For `ssm://` without `--type`, the parameter type is
+  asked for after the editor closes (String / StringList / SecureString; `--yes` takes
+  the String default), followed by an optional one-line description prompt.
+- `--description` flag for `ssm://`. Unlike `--type` it applies to every write, not just
+  creation, since a description can be changed after the fact; leaving it off keeps the
+  current description. It is ignored (with a note) alongside `--meta`, where the YAML
+  document is the authority on every attribute.
 - QuickLook-style file preview in the TUI browser: press `Space` on a file to open a
   full-width, scrollable preview overlay (mouse wheel/trackpad, `↑/↓`, `C-d`/`C-u`,
   `g`/`G`; `Space`/`esc`/`q` to close). Binary files and files larger than 512KB are
@@ -51,6 +62,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TUI file browser support for `ssm://` (tree navigation, `/` filter, and the edit / metadata /
   versions / download / copy / move / delete context menu), reusing the S3 browser via an adapter.
 - SSM error classification (`ParameterNotFound`) in the friendly API error output.
+
+### Fixed
+- `ssm://` now reports `✓ Created` (and `Creating ...`) when a write creates a parameter,
+  instead of calling every write an update. Matches the S3-family wording.
+- A missing **bucket** no longer starts a new-file flow. `NoSuchBucket` / `ContainerNotFound`
+  classify as not-found just like a missing object, so a mistyped bucket used to open an
+  editor and fail only at upload; the fallback now takes object-level codes only.
+- `--description` alone (with the value unchanged) is no longer discarded by the no-op check.
+  The pending change is also shown before the confirmation prompt, which the value diff misses.
+- `--description` no longer leaks into browser actions, where it would have rewritten the
+  description of whichever parameter the cursor was on.
+- A mistyped answer at the `ssm://` type prompt re-asks instead of aborting; when the prompt
+  genuinely cannot be answered, the value just typed is left in the temp file with a
+  `Recovery:` path rather than deleted.
+- The `--description` / `--meta` note is limited to the metadata write paths, instead of also
+  firing on `--meta` reads and `--versions`.
 
 ### Changed
 - Minimum Go version is now **1.25** (required by the Azure SDK and its `golang.org/x/*`

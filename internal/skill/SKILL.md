@@ -171,6 +171,9 @@ echo -n 'postgres://new/db' | ladle --yes    ssm:///myapp/prod/db-url
 # Create a NEW parameter (defaults to String; pass --type for others)
 echo -n 's3cret' | ladle --yes --type SecureString ssm:///myapp/prod/api-token
 
+# Set the description while writing (works on new and existing parameters)
+echo -n 's3cret' | ladle --yes --description 'Fastly API key' ssm:///myapp/prod/api-token
+
 # Parameter attributes as YAML (type, tier, keyId, description, dataType)
 ladle --meta ssm:///myapp/prod/db-password
 ```
@@ -203,6 +206,7 @@ only, like objects.
 | `--reveal` | `ssm://` — decrypt and expose SecureString values (use only when the user asked) |
 | `--recursive` | `ssm://` — list parameters recursively |
 | `--type` | `ssm://` — type when creating a new parameter (String\|StringList\|SecureString) |
+| `--description` | `ssm://` — description to set when writing a parameter; omit to keep the current one |
 
 ### Backend flags
 

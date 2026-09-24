@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -80,11 +82,13 @@ func runSSM(ctx context.Context, u *uri.URI, f *flags) error {
 	// list/browse it, mirroring the S3 prefix redirect. A real parameter (even
 	// one that also has children) is edited/read directly. Skipped when stdin
 	// is piped, where the intent is to create that name.
+	notFound := false
 	if !stdinPiped {
 		if _, derr := client.Describe(ctx, name); derr != nil {
 			if !ssm.IsNotFound(derr) {
 				return derr
 			}
+			notFound = true
 			if entries, lerr := client.List(ctx, name+"/", false); lerr == nil && len(entries) > 0 {
 				if stdoutPiped {
 					return runSSMList(ctx, client, name+"/", f)
@@ -115,6 +119,16 @@ func runSSM(ctx context.Context, u *uri.URI, f *flags) error {
 
 	if f.meta {
 		_, err = runSSMMetaEdit(ctx, client, name, f)
+		return err
+	}
+	// A name with no parameter and no children is a create target: open the
+	// editor on an empty buffer instead of erroring out, mirroring the browser's
+	// "n" key and the pipe-in flow. The probe above already established absence,
+	// so this goes straight to createSSMParam rather than paying for a second
+	// Describe; the re-check just before writing still runs.
+	if notFound {
+		fmt.Fprintf(os.Stderr, "%s does not exist — creating new parameter.\n", ssmDisplay(name))
+		_, err = createSSMParam(ctx, client, name, f, "")
 		return err
 	}
 	_, err = runSSMEdit(ctx, client, name, f)
@@ -154,6 +168,8 @@ func runSSMEdit(ctx context.Context, client ssm.Client, name string, f *flags) (
 		return "", err
 	}
 	sp.StopWithMessage(fmt.Sprintf("✓ Fetched %s", display))
+	originalDesc := md.Description
+	applyDescription(md, f)
 
 	filename := path.Base(name)
 	tmpPath, err := editor.TempFile(filename, []byte(original))
@@ -178,19 +194,25 @@ func runSSMEdit(ctx context.Context, client ssm.Client, name string, f *flags) (
 	// failure above leaves it in place for recovery.
 	defer editor.Cleanup(tmpPath)
 
+	// --description is a change in its own right, so an untouched value is only a
+	// no-op when the description is untouched too.
 	diffText, tooLarge := diff.Generate(original, modified, "original", "modified")
-	if diffText == "" && !tooLarge {
+	if diffText == "" && !tooLarge && md.Description == originalDesc {
 		msg := "No changes detected. Skipping update."
 		fmt.Fprintln(os.Stderr, msg)
 		return msg, nil
 	}
 
 	fmt.Fprintf(os.Stderr, "\nParameter: %s\n\n", display)
-	if tooLarge {
+	switch {
+	case tooLarge:
 		fmt.Fprintln(os.Stderr, "Value is too large to display a diff; skipping diff.")
-	} else {
+	case diffText == "":
+		fmt.Fprintln(os.Stderr, "Value unchanged.")
+	default:
 		diff.Print(os.Stderr, diffText)
 	}
+	printDescriptionChange(os.Stderr, originalDesc, md.Description)
 
 	if f.dryRun {
 		msg := "(dry-run: update skipped)"
@@ -206,7 +228,7 @@ func runSSMEdit(ctx context.Context, client ssm.Client, name string, f *flags) (
 		}
 	}
 
-	return ssmPut(ctx, client, name, modified, md)
+	return ssmPut(ctx, client, name, modified, md, false)
 }
 
 // ensureParamAbsent keeps new-parameter creation create-only: it returns an
@@ -222,27 +244,37 @@ func ensureParamAbsent(ctx context.Context, client ssm.Client, name, display str
 }
 
 // runSSMNewFile creates a new parameter by opening the editor on an empty
-// buffer. It refuses to overwrite an existing parameter (create-only) and
-// defaults the type to String unless --type is given.
+// buffer. It refuses to overwrite an existing parameter (create-only). The type
+// comes from the browser's choice popup (ptype) or the launch --type; when
+// neither is given it is asked for after the editor closes, once there is a
+// value in hand to classify.
 func runSSMNewFile(ctx context.Context, client ssm.Client, name string, f *flags, ptype string) (string, error) {
-	display := ssmDisplay(name)
-
 	// Refuse to clobber an existing parameter; "new file" is create-only.
-	if err := ensureParamAbsent(ctx, client, name, display); err != nil {
+	if err := ensureParamAbsent(ctx, client, name, ssmDisplay(name)); err != nil {
 		return "", err
 	}
+	return createSSMParam(ctx, client, name, f, ptype)
+}
+
+// createSSMParam is runSSMNewFile for a caller that has just proved the
+// parameter absent, so the up-front Describe would be a second answer to a
+// question already asked. The re-check just before writing still runs.
+func createSSMParam(ctx context.Context, client ssm.Client, name string, f *flags, ptype string) (_ string, err error) {
+	display := ssmDisplay(name)
 
 	// ptype is the type the user picked in the browser's choice popup; fall back
-	// to the launch --type when it's empty. Validate it either way so a bad value
-	// is rejected here rather than accepted and failing later in Put.
+	// to the launch --type when it's empty. Validate whichever we got before the
+	// editor opens, so a bad value is rejected up front rather than after the
+	// user has typed a value. Still empty means neither was given: ask below.
 	if ptype == "" {
 		ptype = f.paramType
 	}
-	ptype, err := newParamType(ptype)
-	if err != nil {
-		return "", err
+	if ptype != "" {
+		var terr error
+		if ptype, terr = newParamType(ptype); terr != nil {
+			return "", terr
+		}
 	}
-	md := &ssm.Metadata{Type: ptype}
 
 	filename := path.Base(name)
 	tmpPath, err := editor.TempFile(filename, nil)
@@ -261,7 +293,18 @@ func runSSMNewFile(ctx context.Context, client ssm.Client, name string, f *flags
 	if err != nil {
 		return "", fmt.Errorf("reading new file: %w", err)
 	}
-	defer editor.Cleanup(tmpPath)
+	// From here on the user's typed value exists only in the temp file. Any
+	// failure — an unanswerable prompt, the pre-write re-check, the Put itself —
+	// keeps it and says where, the way an editor failure does: losing a value
+	// the user just typed (a pasted secret, say) is worse than a stray file.
+	// Deliberate exits (cancel, dry-run, empty value) return nil and clean up.
+	defer func() {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Recovery: your value is saved at %s\n", tmpPath)
+			return
+		}
+		editor.Cleanup(tmpPath)
+	}()
 	modified := trimEditorNewline(string(modifiedBytes))
 
 	if modified == "" {
@@ -270,8 +313,30 @@ func runSSMNewFile(ctx context.Context, client ssm.Client, name string, f *flags
 		return msg, nil
 	}
 
+	// One scanner for every question asked below, shared so the type prompt does
+	// not swallow the confirmation's line along with its own.
+	sc := bufio.NewScanner(os.Stdin)
+
+	// No type from the popup or --type: ask now. --yes means "don't prompt", so
+	// it takes the String default instead.
+	if ptype == "" {
+		if f.yes {
+			ptype = paramTypes[0]
+		} else if ptype, err = promptParamType(sc, os.Stderr); err != nil {
+			return "", err
+		}
+	}
+	md := &ssm.Metadata{Type: ptype, Description: f.description}
+	if md.Description == "" && !f.yes {
+		md.Description = promptDescription(sc, os.Stderr)
+	}
+
+	header := fmt.Sprintf("%s (%s)", display, ptype)
+	if md.Description != "" {
+		header += " — " + md.Description
+	}
 	diffText, tooLarge := diff.Generate("", modified, "empty", "new")
-	fmt.Fprintf(os.Stderr, "\nParameter: %s (%s)\n\n", display, ptype)
+	fmt.Fprintf(os.Stderr, "\nParameter: %s\n\n", header)
 	if tooLarge {
 		fmt.Fprintln(os.Stderr, "Value is too large to display a diff; skipping diff.")
 	} else {
@@ -285,7 +350,7 @@ func runSSMNewFile(ctx context.Context, client ssm.Client, name string, f *flags
 	}
 
 	if !f.yes {
-		if !confirm(os.Stdin, os.Stderr, "Create parameter?") {
+		if !confirmScan(sc, os.Stderr, "Create parameter?") {
 			msg := "Creation cancelled."
 			fmt.Fprintln(os.Stderr, msg)
 			return msg, nil
@@ -298,7 +363,7 @@ func runSSMNewFile(ctx context.Context, client ssm.Client, name string, f *flags
 		return "", err
 	}
 
-	return ssmPut(ctx, client, name, modified, md)
+	return ssmPut(ctx, client, name, modified, md, true)
 }
 
 func runSSMPipeOut(ctx context.Context, client ssm.Client, name string, f *flags) error {
@@ -346,6 +411,8 @@ func runSSMPipeIn(ctx context.Context, client ssm.Client, name string, f *flags)
 	} else if f.paramType != "" && !strings.EqualFold(f.paramType, md.Type) {
 		fmt.Fprintf(os.Stderr, "Note: --type applies only when creating; %s already exists as %s.\n", display, md.Type)
 	}
+	originalDesc := md.Description
+	applyDescription(md, f)
 
 	// Fetch the current value for a diff when we can. For an existing
 	// SecureString this needs --reveal; without it we can still update under
@@ -378,19 +445,24 @@ func runSSMPipeIn(ctx context.Context, client ssm.Client, name string, f *flags)
 	}
 
 	// No-op detection runs whenever the current value is known, even with --yes.
+	// A --description change counts as a change even if the value is identical.
 	if haveOriginal {
 		diffText, tooLarge := diff.Generate(original, modified, "remote", "stdin")
-		if diffText == "" && !tooLarge {
+		if diffText == "" && !tooLarge && md.Description == originalDesc {
 			fmt.Fprintln(os.Stderr, "No changes detected. Skipping update.")
 			return nil
 		}
 		fmt.Fprintf(os.Stderr, "\nParameter: %s\n\n", display)
-		if tooLarge {
+		switch {
+		case tooLarge:
 			fmt.Fprintln(os.Stderr, "Value is too large to display a diff; skipping diff.")
-		} else {
+		case diffText == "":
+			fmt.Fprintln(os.Stderr, "Value unchanged.")
+		default:
 			diff.Print(os.Stderr, diffText)
 		}
 	}
+	printDescriptionChange(os.Stderr, originalDesc, md.Description)
 
 	if f.dryRun {
 		fmt.Fprintln(os.Stderr, "\n(dry-run: update skipped)")
@@ -409,7 +481,7 @@ func runSSMPipeIn(ctx context.Context, client ssm.Client, name string, f *flags)
 		}
 	}
 
-	_, err = ssmPut(ctx, client, name, modified, md)
+	_, err = ssmPut(ctx, client, name, modified, md, newParam)
 	return err
 }
 
@@ -426,6 +498,81 @@ func trimEditorNewline(value string) string {
 		fmt.Fprintln(os.Stderr, "Note: removed trailing newline(s) — SSM values are stored verbatim (use pipe-in to keep them).")
 	}
 	return trimmed
+}
+
+// paramTypes lists the SSM parameter types a new parameter can be created as,
+// in the order they are offered.
+var paramTypes = []string{"String", "StringList", "SecureString"}
+
+// promptParamType asks which type a new parameter should be created as. It is
+// the direct-URI counterpart of the browser's choice popup, used when --type
+// was not given; an empty answer takes the default (String).
+func promptParamType(sc *bufio.Scanner, out io.Writer) (string, error) {
+	_, _ = fmt.Fprintln(out, "\nParameter type:")
+	for i, t := range paramTypes {
+		_, _ = fmt.Fprintf(out, "  %d) %s\n", i+1, t)
+	}
+	// Re-ask on a bad answer rather than returning: by this point the caller
+	// holds a value the user has already typed, and a slip on a menu is no
+	// reason to make them type it again. Only unreadable input (EOF) gives up.
+	for {
+		_, _ = fmt.Fprintf(out, "Select [1-%d, default 1]: ", len(paramTypes))
+		if !sc.Scan() {
+			if err := sc.Err(); err != nil {
+				return "", fmt.Errorf("reading parameter type: %w", err)
+			}
+			return "", fmt.Errorf("no parameter type selected")
+		}
+		answer := strings.TrimSpace(sc.Text())
+		if answer == "" {
+			return paramTypes[0], nil
+		}
+		n, err := strconv.Atoi(answer)
+		if err != nil || n < 1 || n > len(paramTypes) {
+			_, _ = fmt.Fprintf(out, "Invalid selection %q — enter a number from 1 to %d.\n", answer, len(paramTypes))
+			continue
+		}
+		return paramTypes[n-1], nil
+	}
+}
+
+// promptDescription asks for the optional description of a new parameter. An
+// empty answer means "no description", so unlike the type there is nothing to
+// fail on and EOF is not an error.
+func promptDescription(sc *bufio.Scanner, out io.Writer) string {
+	_, _ = fmt.Fprint(out, "Description (optional, press enter to skip): ")
+	if !sc.Scan() {
+		return ""
+	}
+	return strings.TrimSpace(sc.Text())
+}
+
+// printDescriptionChange renders a pending description change. The diff covers
+// the value alone, so without this a metadata rewrite would go through the
+// confirmation prompt unseen.
+func printDescriptionChange(out io.Writer, before, after string) {
+	if before == after {
+		return
+	}
+	_, _ = fmt.Fprintf(out, "Description: %s -> %s\n", quoteOrNone(before), quoteOrNone(after))
+}
+
+func quoteOrNone(s string) string {
+	if s == "" {
+		return "(none)"
+	}
+	return strconv.Quote(s)
+}
+
+// applyDescription overrides md's description with --description. Unlike
+// --type, a description can be changed after creation, so the flag applies to
+// every value write rather than creation only. Without the flag the description
+// fetched via Describe stands, so an edit never silently drops it; clearing one
+// goes through --meta, where the YAML is the authority on every attribute.
+func applyDescription(md *ssm.Metadata, f *flags) {
+	if f.description != "" {
+		md.Description = f.description
+	}
 }
 
 func newParamType(flagVal string) (string, error) {
@@ -491,6 +638,11 @@ func runSSMMetaPipeOut(ctx context.Context, client ssm.Client, name string) erro
 
 func runSSMMetaEdit(ctx context.Context, client ssm.Client, name string, f *flags) (string, error) {
 	display := ssmDisplay(name)
+	// --meta edits every attribute through the YAML document, so a --description
+	// alongside it would be a second, conflicting source of truth for one field.
+	if f.description != "" {
+		fmt.Fprintln(os.Stderr, "Note: --description is ignored with --meta; edit the description in the YAML instead.")
+	}
 
 	// Editing metadata re-writes the parameter (SSM has no metadata-only API),
 	// so we need the current value — gated by --reveal for SecureString.
@@ -562,11 +714,16 @@ func runSSMMetaEdit(ctx context.Context, client ssm.Client, name string, f *flag
 		}
 	}
 
-	return ssmPut(ctx, client, name, value, newMeta)
+	return ssmPut(ctx, client, name, value, newMeta, false)
 }
 
 func runSSMMetaPipeIn(ctx context.Context, client ssm.Client, name string, f *flags) error {
 	display := ssmDisplay(name)
+	// --meta edits every attribute through the YAML document, so a --description
+	// alongside it would be a second, conflicting source of truth for one field.
+	if f.description != "" {
+		fmt.Fprintln(os.Stderr, "Note: --description is ignored with --meta; edit the description in the YAML instead.")
+	}
 
 	newYAML, err := io.ReadAll(os.Stdin)
 	if err != nil {
@@ -620,20 +777,26 @@ func runSSMMetaPipeIn(ctx context.Context, client ssm.Client, name string, f *fl
 		}
 	}
 
-	_, err = ssmPut(ctx, client, name, value, newMeta)
+	_, err = ssmPut(ctx, client, name, value, newMeta, false)
 	return err
 }
 
-// ssmPut writes a parameter and reports success on stderr.
-func ssmPut(ctx context.Context, client ssm.Client, name, value string, md *ssm.Metadata) (string, error) {
+// ssmPut writes a parameter and reports success on stderr. SSM has a single
+// write API for both cases, so `create` only selects the wording: a caller that
+// knows the parameter did not exist says so rather than reporting an update.
+func ssmPut(ctx context.Context, client ssm.Client, name, value string, md *ssm.Metadata, create bool) (string, error) {
 	display := ssmDisplay(name)
-	sp := spinner.New(os.Stderr, fmt.Sprintf("Updating %s ...", display))
+	progress, done := "Updating %s ...", "✓ Updated %s"
+	if create {
+		progress, done = "Creating %s ...", "✓ Created %s"
+	}
+	sp := spinner.New(os.Stderr, fmt.Sprintf(progress, display))
 	sp.Start()
 	if err := client.Put(ctx, ssm.PutInput{Name: name, Value: value, Meta: *md}); err != nil {
 		sp.Stop()
 		return "", err
 	}
-	msg := fmt.Sprintf("✓ Updated %s", display)
+	msg := fmt.Sprintf(done, display)
 	sp.StopWithMessage(msg)
 	return msg, nil
 }

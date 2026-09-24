@@ -61,6 +61,7 @@ type flags struct {
 	reveal         bool
 	recursive      bool
 	paramType      string
+	description    string
 	installComp    string
 	completeBucket bool
 	completePath   bool
@@ -138,6 +139,7 @@ AWS SSM Parameter Store (ssm:// — no bucket; path is the parameter name):
 	cmd.Flags().BoolVar(&f.reveal, "reveal", false, "Decrypt and expose SecureString values (ssm://)")
 	cmd.Flags().BoolVar(&f.recursive, "recursive", false, "List parameters recursively (ssm://)")
 	cmd.Flags().StringVar(&f.paramType, "type", "", "Parameter type when creating a new ssm:// parameter (String|StringList|SecureString)")
+	cmd.Flags().StringVar(&f.description, "description", "", "Description to set when writing an ssm:// parameter (empty keeps the current one)")
 	cmd.Flags().StringVar(&f.installComp, "install-completion", "", "Generate completion script (bash|zsh|fish)")
 	cmd.Flags().BoolVar(&f.completeBucket, "complete-bucket", false, "Internal: complete bucket names")
 	cmd.Flags().BoolVar(&f.completePath, "complete-path", false, "Internal: complete object paths")
@@ -364,7 +366,17 @@ func runFileEdit(ctx context.Context, client storage.Client, u *uri.URI, f *flag
 	sp.Start()
 	if err := client.Download(ctx, u.Bucket, u.Key, &buf); err != nil {
 		sp.Stop()
-		return "", err
+		// A missing object is a create target, not an error: open the editor on
+		// an empty buffer, mirroring the browser's "n" key and the pipe-in flow.
+		// A missing *bucket* is not — it is almost always a typo, and turning it
+		// into a create would only surface the mistake after the user has typed
+		// out a whole file. Download proves the bucket exists on this path, so
+		// the create flow can skip its own existence probe.
+		if !apierror.IsObjectNotFound(err) {
+			return "", err
+		}
+		fmt.Fprintf(os.Stderr, "%s does not exist — creating new file.\n", u)
+		return createObject(ctx, client, u, f)
 	}
 	sp.StopWithMessage(fmt.Sprintf("✓ Downloaded %s", u))
 	original := buf.String()
@@ -481,7 +493,13 @@ func runNewFile(ctx context.Context, client storage.Client, u *uri.URI, f *flags
 	if err := ensureObjectAbsent(ctx, client, u); err != nil {
 		return "", err
 	}
+	return createObject(ctx, client, u, f)
+}
 
+// createObject is runNewFile for a caller that has just proved the object
+// absent, so the up-front HeadObject would be a second answer to a question
+// already asked. The re-check just before writing still runs.
+func createObject(ctx context.Context, client storage.Client, u *uri.URI, f *flags) (string, error) {
 	// Open the editor on an empty temp file.
 	filename := filepath.Base(u.Key)
 	tmpPath, err := editor.TempFile(filename, nil)
@@ -1148,11 +1166,18 @@ func handleCompletePath(ctx context.Context, client storage.Client, u *uri.URI) 
 }
 
 func confirm(in io.Reader, out io.Writer, prompt string) bool {
+	return confirmScan(bufio.NewScanner(in), out, prompt)
+}
+
+// confirmScan is confirm over an already-buffered reader. A caller that asks
+// more than one question in a row must share one scanner: a second scanner on
+// the same input would start empty and miss whatever the first buffered past
+// its line.
+func confirmScan(sc *bufio.Scanner, out io.Writer, prompt string) bool {
 	_, _ = fmt.Fprintf(out, "%s [y/N]: ", prompt)
-	scanner := bufio.NewScanner(in)
-	if !scanner.Scan() {
+	if !sc.Scan() {
 		return false
 	}
-	answer := strings.TrimSpace(strings.ToLower(scanner.Text()))
+	answer := strings.TrimSpace(strings.ToLower(sc.Text()))
 	return answer == "y" || answer == "yes"
 }
