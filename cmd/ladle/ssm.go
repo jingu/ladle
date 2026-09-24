@@ -259,7 +259,7 @@ func runSSMNewFile(ctx context.Context, client ssm.Client, name string, f *flags
 // createSSMParam is runSSMNewFile for a caller that has just proved the
 // parameter absent, so the up-front Describe would be a second answer to a
 // question already asked. The re-check just before writing still runs.
-func createSSMParam(ctx context.Context, client ssm.Client, name string, f *flags, ptype string) (string, error) {
+func createSSMParam(ctx context.Context, client ssm.Client, name string, f *flags, ptype string) (_ string, err error) {
 	display := ssmDisplay(name)
 
 	// ptype is the type the user picked in the browser's choice popup; fall back
@@ -293,15 +293,17 @@ func createSSMParam(ctx context.Context, client ssm.Client, name string, f *flag
 	if err != nil {
 		return "", fmt.Errorf("reading new file: %w", err)
 	}
-	// Keep the temp file on the paths that give up with the typed value still in
-	// hand, the way an editor failure does. Losing a value the user just typed —
-	// a pasted secret, say — to an unanswerable prompt would be worse than
-	// leaving a stray file behind.
-	keepTmp := false
+	// From here on the user's typed value exists only in the temp file. Any
+	// failure — an unanswerable prompt, the pre-write re-check, the Put itself —
+	// keeps it and says where, the way an editor failure does: losing a value
+	// the user just typed (a pasted secret, say) is worse than a stray file.
+	// Deliberate exits (cancel, dry-run, empty value) return nil and clean up.
 	defer func() {
-		if !keepTmp {
-			editor.Cleanup(tmpPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Recovery: your value is saved at %s\n", tmpPath)
+			return
 		}
+		editor.Cleanup(tmpPath)
 	}()
 	modified := trimEditorNewline(string(modifiedBytes))
 
@@ -321,8 +323,6 @@ func createSSMParam(ctx context.Context, client ssm.Client, name string, f *flag
 		if f.yes {
 			ptype = paramTypes[0]
 		} else if ptype, err = promptParamType(sc, os.Stderr); err != nil {
-			keepTmp = true
-			fmt.Fprintf(os.Stderr, "Recovery: your value is saved at %s\n", tmpPath)
 			return "", err
 		}
 	}
@@ -518,6 +518,9 @@ func promptParamType(sc *bufio.Scanner, out io.Writer) (string, error) {
 	for {
 		_, _ = fmt.Fprintf(out, "Select [1-%d, default 1]: ", len(paramTypes))
 		if !sc.Scan() {
+			if err := sc.Err(); err != nil {
+				return "", fmt.Errorf("reading parameter type: %w", err)
+			}
 			return "", fmt.Errorf("no parameter type selected")
 		}
 		answer := strings.TrimSpace(sc.Text())

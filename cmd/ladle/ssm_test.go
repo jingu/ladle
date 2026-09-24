@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/iotest"
 
 	"github.com/jingu/ladle/internal/ssm"
 )
@@ -661,27 +662,81 @@ func TestCreateSSMParam_KeepsValueWhenTypePromptFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error when the type prompt cannot be answered")
 	}
-	out := stderr()
-	if !strings.Contains(out, "Recovery:") {
-		t.Fatalf("no recovery hint in stderr:\n%s", out)
-	}
+	assertRecoveredValue(t, stderr(), "topsecret")
+}
+
+// assertRecoveredValue checks that stderr names a Recovery path and that the
+// file there still holds want, then removes it.
+func assertRecoveredValue(t *testing.T, out, want string) {
+	t.Helper()
+	const prefix = "Recovery: your value is saved at "
 	var saved string
 	for _, line := range strings.Split(out, "\n") {
-		if i := strings.Index(line, "Recovery: your value is saved at "); i >= 0 {
-			saved = strings.TrimSpace(line[i+len("Recovery: your value is saved at "):])
+		if i := strings.Index(line, prefix); i >= 0 {
+			saved = strings.TrimSpace(line[i+len(prefix):])
 		}
 	}
 	if saved == "" {
-		t.Fatalf("could not find the saved path in stderr:\n%s", out)
+		t.Fatalf("no recovery path in stderr:\n%s", out)
 	}
-	body, readErr := os.ReadFile(saved)
-	if readErr != nil {
-		t.Fatalf("temp file was removed despite the recovery hint: %v", readErr)
+	body, err := os.ReadFile(saved)
+	if err != nil {
+		t.Fatalf("temp file was removed despite the recovery hint: %v", err)
 	}
-	if string(body) != "topsecret" {
-		t.Errorf("recovered value = %q, want %q", body, "topsecret")
+	if string(body) != want {
+		t.Errorf("recovered value = %q, want %q", body, want)
 	}
 	_ = os.RemoveAll(filepath.Dir(saved))
+}
+
+// putErrClient wraps a FakeClient but forces Put to fail.
+type putErrClient struct {
+	*ssm.FakeClient
+	err error
+}
+
+func (c putErrClient) Put(context.Context, ssm.PutInput) error { return c.err }
+
+// A failed write must not take the typed value down with it: the temp file is
+// kept and reported, same as a failed prompt.
+func TestCreateSSMParam_KeepsValueWhenPutFails(t *testing.T) {
+	ctx := context.Background()
+	boom := errors.New("AccessDeniedException")
+	c := putErrClient{FakeClient: ssm.NewFake(), err: boom}
+	ed := writeFakeEditor(t, "printf 'topsecret' > \"$1\"\nexit 0\n")
+	stderr := captureStderr(t)
+
+	f := &flags{yes: true, editorCmd: ed, paramType: "SecureString"}
+	if _, err := createSSMParam(ctx, c, "/app/token", f, ""); !errors.Is(err, boom) {
+		t.Fatalf("expected the Put error to surface, got %v", err)
+	}
+	assertRecoveredValue(t, stderr(), "topsecret")
+}
+
+// A deliberate cancel is not a failure: the temp file is cleaned up.
+func TestCreateSSMParam_CancelCleansUp(t *testing.T) {
+	ctx := context.Background()
+	c := ssm.NewFake()
+	ed := writeFakeEditor(t, "printf 'v' > \"$1\"\nexit 0\n")
+	withStdin(t, "\nn\n") // no description, decline
+	stderr := captureStderr(t)
+
+	f := &flags{editorCmd: ed, paramType: "String"}
+	if _, err := createSSMParam(ctx, c, "/app/x", f, ""); err != nil {
+		t.Fatalf("createSSMParam: %v", err)
+	}
+	if out := stderr(); strings.Contains(out, "Recovery:") {
+		t.Errorf("a cancel should not keep the temp file:\n%s", out)
+	}
+}
+
+// A read error on stdin is reported as such, not as "no type selected".
+func TestPromptParamType_SurfacesReadError(t *testing.T) {
+	boom := errors.New("tty gone")
+	sc := bufio.NewScanner(iotest.ErrReader(boom))
+	if _, err := promptParamType(sc, io.Discard); !errors.Is(err, boom) {
+		t.Fatalf("expected the read error to surface, got %v", err)
+	}
 }
 
 // A mistyped menu answer re-asks instead of throwing the typed value away.
