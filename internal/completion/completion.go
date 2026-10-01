@@ -38,7 +38,7 @@ _ladle_completions() {
     prev="${COMP_WORDS[COMP_CWORD-1]}"
     cmd="${COMP_WORDS[0]}"
     opts="--meta --versions --editor --profile --region --account --project --endpoint-url --no-sign-request --yes --force --dry-run --help --version"
-    commands="cp skill s3:// gs:// az:// ssm://"
+    commands="cp skill s3:// gs:// az:// ssm:// sm://"
 
     if [[ "${COMP_CWORD}" -eq 1 && "$cur" != *://* && "$cur" != -* ]]; then
         COMPREPLY=( $(compgen -W "${commands}" -- "${cur}") )
@@ -157,6 +157,7 @@ _ladle() {
                 'gs://:Google Cloud Storage URI'
                 'az://:Azure Blob Storage URI'
                 'ssm://:AWS Systems Manager Parameter URI'
+                'sm://:AWS Secrets Manager secret URI'
             )
             _describe -t commands 'ladle command' commands
         fi
@@ -216,7 +217,7 @@ _ladle_uri() {
         done
         schemes=(s3 gs az)
         if (( ! is_copy )); then
-            schemes+=(ssm)
+            schemes+=(ssm sm)
         fi
         compadd -S '://' -- $schemes
     fi
@@ -283,7 +284,7 @@ function __ladle_complete_uri
             end
         end
     else
-        set -l schemes 's3://' 'gs://' 'az://' 'ssm://'
+        set -l schemes 's3://' 'gs://' 'az://' 'ssm://' 'sm://'
         if contains -- cp $tokens
             set schemes 's3://' 'gs://' 'az://'
         end

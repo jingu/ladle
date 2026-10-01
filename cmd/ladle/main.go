@@ -87,7 +87,7 @@ func newRootCmd() *cobra.Command {
 Edit cloud storage files directly from your terminal.
 Download, edit in your favorite editor, diff, confirm, upload — all in one shot.
 
-Supported backends: AWS S3 (s3://), Google Cloud Storage (gs://), Azure Blob Storage (az://), and AWS SSM Parameter Store (ssm://).
+Supported backends: AWS S3 (s3://), Google Cloud Storage (gs://), Azure Blob Storage (az://), AWS SSM Parameter Store (ssm://), and AWS Secrets Manager (sm://).
 
 Examples:
   ladle s3://bucket/path/to/file.html
@@ -114,7 +114,12 @@ Azure Blob Storage (container = bucket, blob = key):
 
 AWS SSM Parameter Store (ssm:// — no bucket; path is the parameter name):
   ladle ssm:///myapp/prod/db-url                          # edit a parameter value
-  ladle --reveal ssm:///myapp/prod/db-password            # decrypt & edit a SecureString`,
+  ladle --reveal ssm:///myapp/prod/db-password            # decrypt & edit a SecureString
+
+AWS Secrets Manager (sm:// — path is the secret name; #key selects a JSON key):
+  ladle --reveal sm://prod/myapp/db                       # edit the whole secret
+  ladle --reveal sm://prod/myapp/db#DB_PASS               # edit one key of a JSON secret
+  ladle sm://prod/myapp/db#                               # list the secret's keys`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.MaximumNArgs(1),
@@ -136,10 +141,10 @@ AWS SSM Parameter Store (ssm:// — no bucket; path is the parameter name):
 	cmd.Flags().BoolVar(&f.force, "force", false, "Force editing of binary files")
 	cmd.Flags().BoolVar(&f.dryRun, "dry-run", false, "Show diff without uploading")
 	cmd.Flags().BoolVar(&f.append, "append", false, "Append stdin to the existing value instead of replacing it (pipe-in)")
-	cmd.Flags().BoolVar(&f.reveal, "reveal", false, "Decrypt and expose SecureString values (ssm://)")
-	cmd.Flags().BoolVar(&f.recursive, "recursive", false, "List parameters recursively (ssm://)")
+	cmd.Flags().BoolVar(&f.reveal, "reveal", false, "Expose secret values: SecureString (ssm://) and all sm:// secrets")
+	cmd.Flags().BoolVar(&f.recursive, "recursive", false, "List parameters/secrets recursively (ssm://, sm://)")
 	cmd.Flags().StringVar(&f.paramType, "type", "", "Parameter type when creating a new ssm:// parameter (String|StringList|SecureString)")
-	cmd.Flags().StringVar(&f.description, "description", "", "Description to set when writing an ssm:// parameter (empty keeps the current one)")
+	cmd.Flags().StringVar(&f.description, "description", "", "Description to set when writing an ssm:// parameter or creating an sm:// secret (empty keeps the current one)")
 	cmd.Flags().StringVar(&f.installComp, "install-completion", "", "Generate completion script (bash|zsh|fish)")
 	cmd.Flags().BoolVar(&f.completeBucket, "complete-bucket", false, "Internal: complete bucket names")
 	cmd.Flags().BoolVar(&f.completePath, "complete-path", false, "Internal: complete object paths")
@@ -236,6 +241,9 @@ func run(cmd *cobra.Command, args []string, f *flags) error {
 	// storage.Client (bucket/object) model.
 	if u.Scheme == uri.SchemeSSM {
 		return runSSM(ctx, u, f)
+	}
+	if u.Scheme == uri.SchemeSM {
+		return runSM(ctx, u, f)
 	}
 
 	client, err := newClient(ctx, u, f)

@@ -495,7 +495,7 @@ func runSSMPipeIn(ctx context.Context, client ssm.Client, name string, f *flags)
 func trimEditorNewline(value string) string {
 	trimmed := strings.TrimRight(value, "\r\n")
 	if trimmed != value {
-		fmt.Fprintln(os.Stderr, "Note: removed trailing newline(s) — SSM values are stored verbatim (use pipe-in to keep them).")
+		fmt.Fprintln(os.Stderr, "Note: removed trailing newline(s) — values are stored verbatim (use pipe-in to keep them).")
 	}
 	return trimmed
 }

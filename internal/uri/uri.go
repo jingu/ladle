@@ -15,6 +15,7 @@ const (
 	SchemeAzure Scheme = "az"
 	SchemeR2    Scheme = "r2"
 	SchemeSSM   Scheme = "ssm"
+	SchemeSM    Scheme = "sm"
 )
 
 // URI represents a parsed cloud storage URI.
@@ -23,10 +24,19 @@ type URI struct {
 	Bucket string
 	Key    string
 	Raw    string
+	// HasKey is set for sm:// when the URI carries a "#" fragment, which
+	// distinguishes "sm://name#" (the secret's keys) from "sm://name" (the
+	// whole secret) even though both leave Key empty.
+	HasKey bool
 }
 
 // IsDirectory returns true if the URI points to a directory (ends with /).
 func (u *URI) IsDirectory() bool {
+	// For sm:// the secret name sits in Bucket: a missing name or a trailing
+	// "/" is a name-prefix listing, unless a "#key" fragment follows.
+	if u.Scheme == SchemeSM {
+		return !u.HasKey && (u.Bucket == "" || strings.HasSuffix(u.Bucket, "/"))
+	}
 	return u.Key == "" || strings.HasSuffix(u.Key, "/")
 }
 
@@ -48,20 +58,20 @@ func Parse(raw string) (*URI, error) {
 	if !strings.Contains(raw, "://") {
 		candidate := Scheme(raw)
 		switch candidate {
-		case SchemeS3, SchemeGCS, SchemeAzure, SchemeR2, SchemeSSM:
+		case SchemeS3, SchemeGCS, SchemeAzure, SchemeR2, SchemeSSM, SchemeSM:
 			raw = raw + "://"
 		default:
-			return nil, fmt.Errorf("invalid URI %q: missing scheme (expected s3://, gs://, az://, r2://, ssm://)", raw)
+			return nil, fmt.Errorf("invalid URI %q: missing scheme (expected s3://, gs://, az://, r2://, ssm://, sm://)", raw)
 		}
 	}
 
 	idx := strings.Index(raw, "://")
 	scheme := Scheme(raw[:idx])
 	switch scheme {
-	case SchemeS3, SchemeGCS, SchemeAzure, SchemeR2, SchemeSSM:
+	case SchemeS3, SchemeGCS, SchemeAzure, SchemeR2, SchemeSSM, SchemeSM:
 		// OK
 	default:
-		return nil, fmt.Errorf("unsupported scheme %q: expected s3, gs, az, r2, or ssm", scheme)
+		return nil, fmt.Errorf("unsupported scheme %q: expected s3, gs, az, r2, ssm, or sm", scheme)
 	}
 
 	rest := raw[idx+3:]
@@ -77,6 +87,17 @@ func Parse(raw string) (*URI, error) {
 			Key:    "/" + strings.TrimLeft(rest, "/"),
 			Raw:    raw,
 		}, nil
+	}
+
+	// Secrets Manager names may themselves contain "/" (e.g. "prod/app/db"), so
+	// the name cannot end at the first slash. The whole path is the secret name
+	// and a "#" fragment selects one key of a JSON secret: "sm://prod/app/db#user".
+	if scheme == SchemeSM {
+		name, key, hasKey := strings.Cut(rest, "#")
+		if name == "" && hasKey {
+			return nil, fmt.Errorf("invalid URI %q: empty secret name", raw)
+		}
+		return &URI{Scheme: scheme, Bucket: name, Key: key, Raw: raw, HasKey: hasKey}, nil
 	}
 
 	var bucket, key string

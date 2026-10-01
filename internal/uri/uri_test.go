@@ -37,6 +37,14 @@ func TestParse(t *testing.T) {
 		{"ssm://", SchemeSSM, "", "/", true, false},
 		{"ssm:///", SchemeSSM, "", "/", true, false},
 		{"ssm", SchemeSSM, "", "/", true, false},
+		// Secrets Manager: whole path is the secret name, "#" selects a key
+		{"sm://prod/app/db", SchemeSM, "prod/app/db", "", false, false},
+		{"sm://prod/app/db#DB_NAME", SchemeSM, "prod/app/db", "DB_NAME", false, false},
+		{"sm://prod/app/db#", SchemeSM, "prod/app/db", "", false, false},
+		{"sm://prod/app/", SchemeSM, "prod/app/", "", true, false},
+		{"sm://", SchemeSM, "", "", true, false},
+		{"sm", SchemeSM, "", "", true, false},
+		{"sm://#DB_NAME", "", "", "", false, true},
 	}
 
 	for _, tt := range tests {
