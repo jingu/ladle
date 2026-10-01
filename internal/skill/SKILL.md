@@ -1,6 +1,6 @@
 ---
 name: ladle
-description: Read, edit, and inspect cloud storage objects (AWS S3 s3://, Google Cloud Storage gs://, Azure Blob az://) and AWS SSM Parameter Store values (ssm://) with the ladle CLI. Use when the user wants to view, download, replace, or edit the metadata of an object in a cloud bucket, or to read/update a Systems Manager parameter or secret — especially non-interactively from an agent.
+description: Read, edit, and inspect cloud storage objects (AWS S3 s3://, Google Cloud Storage gs://, Azure Blob az://), AWS SSM Parameter Store values (ssm://), and AWS Secrets Manager secrets (sm://) with the ladle CLI. Use when the user wants to view, download, replace, or edit the metadata of an object in a cloud bucket, or to read/update a Systems Manager parameter or secret — especially non-interactively from an agent.
 ---
 
 # ladle — cloud storage object editing
@@ -12,6 +12,7 @@ shows a diff, and uploads it back. Supported backends:
 - Google Cloud Storage — `gs://bucket/key`
 - Azure Blob Storage — `az://container/blob`
 - AWS SSM Parameter Store — `ssm:///my/param` (no bucket; the path is the parameter name — see the SSM section below)
+- AWS Secrets Manager — `sm://secret/name` or `sm://secret/name#key` (see the Secrets Manager section below)
 
 ## Agent rule: always use pipe mode, never the interactive editor
 
@@ -191,6 +192,38 @@ is `ssm:GetParameter`, `ssm:GetParametersByPath` (list/browse),
 `ssm:DeleteParameter` only for the interactive browser). Use
 `--profile` / `--region` as for S3. Restoring a version is interactive (TUI)
 only, like objects.
+
+## AWS Secrets Manager (`sm://`)
+
+The whole path after `sm://` is the secret name (names may contain `/`); a `#key`
+fragment selects one top-level key of a JSON secret.
+
+```bash
+# Read a whole secret, or one key (string values come out without quotes)
+ladle --reveal sm://prod/myapp/db
+ladle --reveal sm://prod/myapp/db#DB_PASS
+
+# List secrets under a prefix, or a secret's keys (names only; no --reveal)
+ladle sm://prod/
+ladle sm://prod/myapp/db#
+
+# Version history (tab-separated: version id, created RFC3339 UTC, staging labels)
+ladle --versions sm://prod/myapp/db
+
+# Update one key or the whole secret (same confirm-first rule as objects)
+printf '%s' 'new-pass' | ladle --yes sm://prod/myapp/db#DB_PASS
+jq -c . new.json | ladle --yes sm://prod/myapp/db
+
+# Create a new secret (JSON input is validated and stored compact)
+printf '%s' '{"user":"app"}' | ladle --yes --description 'app DB' sm://prod/myapp/db2
+```
+
+**Every value is a secret.** Reading one, or diffing an update against an
+existing value, refuses without `--reveal`; only add it when the user asked you
+to handle that secret, since the value ends up in your output. Writes with
+`--yes` need no `--reveal`. Stdin bytes are stored as-is (use `printf '%s'`, not
+`echo`, to avoid a trailing newline); JSON input must parse. `--meta` and
+`--append` are not supported for `sm://`.
 
 ## Useful flags
 

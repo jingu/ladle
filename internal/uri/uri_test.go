@@ -37,6 +37,14 @@ func TestParse(t *testing.T) {
 		{"ssm://", SchemeSSM, "", "/", true, false},
 		{"ssm:///", SchemeSSM, "", "/", true, false},
 		{"ssm", SchemeSSM, "", "/", true, false},
+		// Secrets Manager: whole path is the secret name, "#" selects a key
+		{"sm://prod/app/db", SchemeSM, "prod/app/db", "", false, false},
+		{"sm://prod/app/db#DB_NAME", SchemeSM, "prod/app/db", "DB_NAME", false, false},
+		{"sm://prod/app/db#", SchemeSM, "prod/app/db", "", false, false},
+		{"sm://prod/app/", SchemeSM, "prod/app/", "", true, false},
+		{"sm://", SchemeSM, "", "", true, false},
+		{"sm", SchemeSM, "", "", true, false},
+		{"sm://#DB_NAME", "", "", "", false, true},
 	}
 
 	for _, tt := range tests {
@@ -79,6 +87,9 @@ func TestIsBucketList(t *testing.T) {
 		// SSM has no bucket concept — never a bucket-list URI.
 		{"ssm://", false},
 		{"ssm:///myapp/db", false},
+		// A bare sm:// lists secrets, not buckets.
+		{"sm://", false},
+		{"sm://prod/", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {

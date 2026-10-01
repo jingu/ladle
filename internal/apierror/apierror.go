@@ -178,7 +178,9 @@ func classifyAPICode(code string) Kind {
 		"ContainerNotFound",
 		// SSM Parameter Store
 		"ParameterNotFound",
-		"ParameterVersionNotFound":
+		"ParameterVersionNotFound",
+		// Secrets Manager
+		"ResourceNotFoundException":
 		return KindNotFound
 
 	// Throttling

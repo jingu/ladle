@@ -360,6 +360,58 @@ works. When stdout is redirected/piped, a listing is printed instead. In the
 browser, SecureString values are masked in the version-preview pane unless
 `--reveal` is set.
 
+## Secrets Manager
+
+`sm://` edits **AWS Secrets Manager** secrets with the same edit → diff → confirm
+flow. Secret names often contain `/` (`prod/myapp/db`), so the whole path after
+the scheme is the secret name, and a `#key` fragment selects one top-level key of
+a JSON secret.
+
+```bash
+# Edit the whole secret. A compact JSON secret opens indented and is written back compact.
+ladle --reveal sm://prod/myapp/db
+
+# Edit one key of a JSON secret (a string value is edited without its quotes)
+ladle --reveal sm://prod/myapp/db#DB_PASS
+
+# Add a key, or create a new secret, in your editor (no --reveal needed: nothing existing is shown)
+ladle sm://prod/myapp/db#DB_NAME
+ladle --description 'Fastly API key' sm://prod/myapp/fastly
+
+# Read / write via pipes
+ladle --reveal sm://prod/myapp/db#DB_PASS > pass.txt
+printf '%s' "$NEW_PASS" | ladle --yes sm://prod/myapp/db#DB_PASS
+
+# Listings (names only, no --reveal): secrets under a prefix, and a secret's keys
+ladle sm://prod/              # one level; --recursive for every name
+ladle sm://prod/myapp/db#
+
+# Version history (tab-separated: version id, created RFC3339 UTC, staging labels)
+ladle --versions sm://prod/myapp/db
+```
+
+Notes:
+- Every value is a secret, and without `--reveal` none is printed: editing,
+  piping a value out, and reviewing an update to an existing value refuse, while
+  creating a secret, adding a key, and `--yes` writes go ahead with the diff hidden.
+- A JSON secret must stay valid JSON. After an interactive edit, a parse error
+  shows its line and column and asks whether to edit again (your text is kept) or
+  abort; pipe-in and `--yes` fail instead. Whitespace-only changes are not written.
+- A `#key` edit rewrites only that key's value; everything else in the document is
+  kept byte for byte (a nested value is compacted in a compact document). If the
+  secret gains a new version while you edit, the write is refused instead of
+  overwriting that change (checked just before writing, so not atomic).
+- Temp files hold plaintext secrets, so they are removed on every exit, including
+  failures (unlike other backends, there is no recovery copy).
+- A warning is shown before writing a secret with rotation enabled.
+- Binary secrets (`SecretBinary`), `--meta`, `--append`, and the TUI browser are not
+  supported yet; interactive listings print to the terminal.
+
+**Required IAM actions:** `secretsmanager:GetSecretValue`, `secretsmanager:DescribeSecret`,
+`secretsmanager:PutSecretValue`, `secretsmanager:CreateSecret` (new secrets),
+`secretsmanager:ListSecrets` (listings), `secretsmanager:ListSecretVersionIds` (`--versions`),
+plus KMS for a customer-managed key.
+
 ## Installation
 
 ### Homebrew

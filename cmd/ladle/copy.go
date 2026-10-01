@@ -56,7 +56,8 @@ func runCopyCommand(ctx context.Context, sourceRaw, destinationRaw string, f *fl
 	if err != nil {
 		return err
 	}
-	if source.Scheme == uri.SchemeSSM || destination.Scheme == uri.SchemeSSM {
+	if source.Scheme == uri.SchemeSSM || destination.Scheme == uri.SchemeSSM ||
+		source.Scheme == uri.SchemeSM || destination.Scheme == uri.SchemeSM {
 		return fmt.Errorf("cp supports object storage URIs only")
 	}
 	if source.IsDirectory() || destination.IsDirectory() {
