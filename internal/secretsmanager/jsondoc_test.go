@@ -153,3 +153,14 @@ func TestKeyRawFromEditRejectsInvalidUTF8(t *testing.T) {
 		t.Error("KeyRawFromEdit accepted invalid UTF-8")
 	}
 }
+
+// Multibyte text before the error must not push the column past the character.
+func TestValidatePositionCountsRunes(t *testing.T) {
+	var se *SyntaxError
+	if !errors.As(Validate(`{"é": x}`), &se) {
+		t.Fatal("want *SyntaxError")
+	}
+	if se.Line != 1 || se.Column != 7 {
+		t.Errorf("position = %d:%d, want 1:7", se.Line, se.Column)
+	}
+}

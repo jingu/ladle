@@ -1,6 +1,6 @@
 ---
 name: ladle
-description: Read, edit, and inspect cloud storage objects (AWS S3 s3://, Google Cloud Storage gs://, Azure Blob az://) AWS SSM Parameter Store values (ssm://), and AWS Secrets Manager secrets (sm://) with the ladle CLI. Use when the user wants to view, download, replace, or edit the metadata of an object in a cloud bucket, or to read/update a Systems Manager parameter or secret — especially non-interactively from an agent.
+description: Read, edit, and inspect cloud storage objects (AWS S3 s3://, Google Cloud Storage gs://, Azure Blob az://), AWS SSM Parameter Store values (ssm://), and AWS Secrets Manager secrets (sm://) with the ladle CLI. Use when the user wants to view, download, replace, or edit the metadata of an object in a cloud bucket, or to read/update a Systems Manager parameter or secret — especially non-interactively from an agent.
 ---
 
 # ladle — cloud storage object editing

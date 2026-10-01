@@ -63,7 +63,8 @@ func Validate(s string) error {
 var redactChar = regexp.MustCompile(`invalid character '(?:\\.|[^'\\])*'`)
 
 // position converts the byte offset reported by encoding/json (just past the
-// offending byte) into a 1-based line and column.
+// offending byte) into a 1-based line and column. The column counts runes,
+// so it points at the character an editor shows even after multibyte text.
 func position(s string, offset int) (line, col int) {
 	if offset > len(s) {
 		offset = len(s)
@@ -73,7 +74,7 @@ func position(s string, offset int) (line, col int) {
 	}
 	before := s[:offset]
 	line = strings.Count(before, "\n") + 1
-	col = offset - strings.LastIndexByte(before, '\n')
+	col = utf8.RuneCountInString(before[strings.LastIndexByte(before, '\n')+1:]) + 1
 	return line, col
 }
 
